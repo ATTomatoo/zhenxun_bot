@@ -241,7 +241,7 @@ class BankManager:
     @classmethod
     async def get_bank_info(cls) -> bytes:
         now = datetime.now()
-        now_start = datetime.now() - timedelta(
+        now_start = now - timedelta(
             hours=now.hour, minutes=now.minute, seconds=now.second
         )
         (
@@ -255,7 +255,9 @@ class BankManager:
                 MahiroBank.annotate(
                     amount_sum=Sum("amount"), user_count=Count("id")
                 ).values("amount_sum", "user_count"),
-                MahiroBankLog.filter(create_time__gt=now_start).count(),
+                MahiroBankLog.filter(
+                    create_time__gt=now_start, handle_type=BankHandleType.DEPOSIT
+                ).count(),
                 MahiroBankLog.filter(handle_type=BankHandleType.INTEREST)
                 .annotate(amount_sum=Sum("amount"))
                 .values("amount_sum"),

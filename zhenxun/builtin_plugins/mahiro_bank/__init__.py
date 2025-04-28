@@ -96,13 +96,6 @@ _matcher = on_alconna(
 )
 
 _matcher.shortcut(
-    r"1111",
-    command="mahiro-bank",
-    arguments=["test"],
-    prefix=True,
-)
-
-_matcher.shortcut(
     r"存款\s*(?P<amount>\d+)?",
     command="mahiro-bank",
     arguments=["deposit", "{amount}"],
