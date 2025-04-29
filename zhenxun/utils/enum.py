@@ -105,7 +105,9 @@ class RequestType(StrEnum):
     """
 
     FRIEND = "FRIEND"
+    """好友"""
     GROUP = "GROUP"
+    """群组"""
 
 
 class RequestHandleType(StrEnum):
