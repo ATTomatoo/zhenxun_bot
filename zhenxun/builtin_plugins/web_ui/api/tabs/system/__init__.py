@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import re
 import shutil
 
 import aiofiles
@@ -25,20 +26,36 @@ IMAGE_TYPE = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg"]
     description="获取文件列表",
 )
 async def _(path: str | None = None) -> Result[list[DirFile]]:
-    base_path = Path(path) if path else Path()
-    data_list = []
-    for file in os.listdir(base_path):
-        file_path = base_path / file
-        is_image = any(file.endswith(f".{t}") for t in IMAGE_TYPE)
-        data_list.append(
-            DirFile(
-                is_file=not file_path.is_dir(),
-                is_image=is_image,
-                name=file,
-                parent=path,
+    try:
+        # 清理和验证路径
+        if path:
+            # 移除任何可能的路径遍历尝试
+            path = re.sub(r"[\\/]\.\.[\\/]", "", path)
+            # 规范化路径
+            base_path = Path(path).resolve()
+            # 验证路径是否在项目根目录内
+            if not base_path.is_relative_to(Path().resolve()):
+                return Result.fail("访问路径超出允许范围")
+        else:
+            base_path = Path().resolve()
+
+        data_list = []
+        for file in os.listdir(base_path):
+            file_path = base_path / file
+            is_image = any(file.endswith(f".{t}") for t in IMAGE_TYPE)
+            data_list.append(
+                DirFile(
+                    is_file=not file_path.is_dir(),
+                    is_image=is_image,
+                    name=file,
+                    parent=str(base_path.relative_to(Path().resolve()))
+                    if path
+                    else None,
+                )
             )
-        )
-    return Result.ok(data_list)
+        return Result.ok(data_list)
+    except Exception as e:
+        return Result.fail(f"获取文件列表失败: {e!s}")
 
 
 @router.get(
