@@ -2,6 +2,7 @@ import contextlib
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
+import re
 
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
@@ -26,6 +27,31 @@ token_data = {"token": []}
 if token_file.exists():
     with contextlib.suppress(json.JSONDecodeError):
         token_data = json.load(open(token_file, encoding="utf8"))
+
+
+def validate_path(path_str: str | None) -> tuple[Path | None, str | None]:
+    """验证路径是否安全
+
+    参数:
+        path_str: 用户输入的路径
+
+    返回:
+        tuple[Path | None, str | None]: (验证后的路径, 错误信息)
+    """
+    try:
+        if not path_str:
+            return Path().resolve(), None
+
+        # 移除任何可能的路径遍历尝试
+        path_str = re.sub(r"[\\/]\.\.[\\/]", "", path_str)
+        # 规范化路径
+        path = Path(path_str).resolve()
+        # 验证路径是否在项目根目录内
+        if not path.is_relative_to(Path().resolve()):
+            return None, "访问路径超出允许范围"
+        return path, None
+    except Exception as e:
+        return None, f"路径验证失败: {e!s}"
 
 
 def get_user(uname: str) -> User | None:
