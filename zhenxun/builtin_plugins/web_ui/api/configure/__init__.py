@@ -42,6 +42,31 @@ async def _(setting: Setting) -> Result:
     if not env_file.exists():
         return Result.fail("配置文件.env.dev不存在。")
     env_text = env_file.read_text(encoding="utf-8")
+    if setting.db_url:
+        if setting.db_url.startswith("sqlite"):
+            base_dir = Path().resolve()
+            # 清理和验证数据库路径
+            db_path_str = setting.db_url.split(":")[-1].strip()
+            # 移除任何可能的路径遍历尝试
+            db_path_str = re.sub(r"[\\/]\.\.[\\/]", "", db_path_str)
+            # 规范化路径
+            db_path = Path(db_path_str).resolve()
+            parent_path = db_path.parent
+
+            # 验证路径是否在项目根目录内
+            try:
+                if not parent_path.absolute().is_relative_to(base_dir):
+                    return Result.fail("数据库路径不在项目根目录内。")
+            except ValueError:
+                return Result.fail("无效的数据库路径。")
+
+            # 创建目录
+            try:
+                parent_path.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                return Result.fail(f"创建数据库目录失败: {e!s}")
+
+        env_text = env_text.replace('DB_URL = ""', f'DB_URL = "{setting.db_url}"')
     if setting.superusers:
         superusers = ", ".join([f'"{s}"' for s in setting.superusers])
         env_text = re.sub(r"SUPERUSERS=\[.*?\]", f"SUPERUSERS=[{superusers}]", env_text)
@@ -50,15 +75,6 @@ async def _(setting: Setting) -> Result:
     if setting.port:
         env_text = env_text.replace("PORT = 8080", f"PORT = {setting.port}")
         port = setting.port
-    if setting.db_url:
-        if setting.db_url.startswith("sqlite"):
-            base_dir = Path().resolve()
-            db_path = Path(setting.db_url.split(":")[-1]).resolve()
-            parent_path = db_path.parent
-            if not parent_path.absolute().is_relative_to(base_dir):
-                return Result.fail("数据库路径不在项目根目录内。")
-            parent_path.mkdir(parents=True, exist_ok=True)
-        env_text = env_text.replace('DB_URL = ""', f'DB_URL = "{setting.db_url}"')
     if setting.username:
         Config.set_config("web-ui", "username", setting.username)
     Config.set_config("web-ui", "password", setting.password, True)
