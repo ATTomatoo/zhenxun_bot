@@ -6,7 +6,7 @@ else:
     from strenum import StrEnum
 
 
-class PriorityLifecycle(StrEnum):
+class PriorityLifecycleType(StrEnum):
     STARTUP = "STARTUP"
     """启动"""
     SHUTDOWN = "SHUTDOWN"

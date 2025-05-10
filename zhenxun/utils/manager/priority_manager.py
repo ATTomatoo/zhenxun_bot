@@ -5,17 +5,17 @@ import nonebot
 from nonebot.utils import is_coroutine_callable
 
 from zhenxun.services.log import logger
-from zhenxun.utils.enum import PriorityLifecycle
+from zhenxun.utils.enum import PriorityLifecycleType
 from zhenxun.utils.exception import HookPriorityException
 
 driver = nonebot.get_driver()
 
 
 class PriorityLifecycle:
-    _data: ClassVar[dict[PriorityLifecycle, dict[int, list[Callable]]]] = {}
+    _data: ClassVar[dict[PriorityLifecycleType, dict[int, list[Callable]]]] = {}
 
     @classmethod
-    def add(cls, hook_type: PriorityLifecycle, func: Callable, priority: int = 5):
+    def add(cls, hook_type: PriorityLifecycleType, func: Callable, priority: int = 5):
         if hook_type not in cls._data:
             cls._data[hook_type] = {}
         if priority not in cls._data[hook_type]:
@@ -25,7 +25,7 @@ class PriorityLifecycle:
     @classmethod
     def on_startup(cls, *, priority: int = 5):
         def wrapper(func):
-            cls.add(PriorityLifecycle.STARTUP, func, priority)
+            cls.add(PriorityLifecycleType.STARTUP, func, priority)
             return func
 
         return wrapper
@@ -33,7 +33,7 @@ class PriorityLifecycle:
     @classmethod
     def on_shutdown(cls, *, priority: int = 5):
         def wrapper(func):
-            cls.add(PriorityLifecycle.SHUTDOWN, func, priority)
+            cls.add(PriorityLifecycleType.SHUTDOWN, func, priority)
             return func
 
         return wrapper
@@ -41,7 +41,7 @@ class PriorityLifecycle:
 
 @driver.on_startup
 async def _():
-    priority_data = PriorityLifecycle._data.get(PriorityLifecycle.STARTUP)
+    priority_data = PriorityLifecycle._data.get(PriorityLifecycleType.STARTUP)
     if not priority_data:
         return
     priority_list = sorted(priority_data.keys())
