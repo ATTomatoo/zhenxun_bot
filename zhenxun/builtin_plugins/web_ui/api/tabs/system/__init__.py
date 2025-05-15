@@ -31,18 +31,19 @@ async def _(path: str | None = None) -> Result[list[DirFile]]:
             return Result.fail(error)
         if not base_path:
             return Result.fail("无效的路径")
-    data_list = []
-    for file in os.listdir(base_path):
-        file_path = base_path / file
-        is_image = any(file.endswith(f".{t}") for t in IMAGE_TYPE)
-        data_list.append(
-            DirFile(
-                is_file=not file_path.is_dir(),
-                is_image=is_image,
-                name=file,
-                parent=path,
-                size=None if file_path.is_dir() else file_path.stat().st_size,
-                mtime=file_path.stat().st_mtime,
+        data_list = []
+        for file in os.listdir(base_path):
+            file_path = base_path / file
+            is_image = any(file.endswith(f".{t}") for t in IMAGE_TYPE)
+            data_list.append(
+                DirFile(
+                    is_file=not file_path.is_dir(),
+                    is_image=is_image,
+                    name=file,
+                    parent=path,
+                    size=None if file_path.is_dir() else file_path.stat().st_size,
+                    mtime=file_path.stat().st_mtime,
+                )
             )
         return Result.ok(data_list)
     except Exception as e:
