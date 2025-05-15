@@ -67,6 +67,7 @@ def validate_path(path_str: str | None) -> tuple[Path | None, str | None]:
     except Exception as e:
         return None, f"路径验证失败: {e!s}"
 
+
 GROUP_HELP_PATH = DATA_PATH / "group_help"
 SIMPLE_HELP_IMAGE = IMAGE_PATH / "SIMPLE_HELP.png"
 SIMPLE_DETAIL_HELP_IMAGE = IMAGE_PATH / "SIMPLE_DETAIL_HELP.png"

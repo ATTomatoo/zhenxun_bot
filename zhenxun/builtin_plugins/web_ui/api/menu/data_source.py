@@ -63,7 +63,6 @@ class MenuManager:
             next(i for i, m in enumerate(default_menus) if m.module == module)
         ]
 
-
     def get_menus(self):
         return MenuData(menus=self.menu)
 
