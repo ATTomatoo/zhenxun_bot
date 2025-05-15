@@ -31,20 +31,18 @@ async def _(path: str | None = None) -> Result[list[DirFile]]:
             return Result.fail(error)
         if not base_path:
             return Result.fail("无效的路径")
-
-        data_list = []
-        for file in os.listdir(base_path):
-            file_path = base_path / file
-            is_image = any(file.endswith(f".{t}") for t in IMAGE_TYPE)
-            data_list.append(
-                DirFile(
-                    is_file=not file_path.is_dir(),
-                    is_image=is_image,
-                    name=file,
-                    parent=str(base_path.relative_to(Path().resolve()))
-                    if path
-                    else None,
-                )
+    data_list = []
+    for file in os.listdir(base_path):
+        file_path = base_path / file
+        is_image = any(file.endswith(f".{t}") for t in IMAGE_TYPE)
+        data_list.append(
+            DirFile(
+                is_file=not file_path.is_dir(),
+                is_image=is_image,
+                name=file,
+                parent=path,
+                size=None if file_path.is_dir() else file_path.stat().st_size,
+                mtime=file_path.stat().st_mtime,
             )
         return Result.ok(data_list)
     except Exception as e:
@@ -265,3 +263,13 @@ async def _(full_path: str) -> Result[str]:
         return Result.ok(BuildImage.open(path).pic2bs4())
     except Exception as e:
         return Result.warning_(f"获取图片失败: {e!s}")
+
+
+@router.get(
+    "/ping",
+    response_model=Result[str],
+    response_class=JSONResponse,
+    description="检查服务器状态",
+)
+async def _() -> Result[str]:
+    return Result.ok("pong")

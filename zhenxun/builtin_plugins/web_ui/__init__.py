@@ -31,8 +31,7 @@ from .public import init_public
 __plugin_meta__ = PluginMetadata(
     name="WebUi",
     description="WebUi API",
-    usage="""
-    """.strip(),
+    usage='"""\n    """.strip(),',
     extra=PluginExtraData(
         author="HibiKier",
         version="0.1",
@@ -86,7 +85,6 @@ BaseApiRouter.include_router(system_router)
 BaseApiRouter.include_router(menu_router)
 BaseApiRouter.include_router(configure_router)
 
-
 WsApiRouter = APIRouter(prefix="/zhenxun/socket")
 
 WsApiRouter.include_router(ws_log_routes)
@@ -97,6 +95,8 @@ WsApiRouter.include_router(chat_routes)
 @PriorityLifecycle.on_startup(priority=0)
 async def _():
     try:
+        # 存储任务引用的列表，防止任务被垃圾回收
+        _tasks = []
 
         async def log_sink(message: str):
             loop = None
@@ -107,7 +107,8 @@ async def _():
                     logger.warning("Web Ui log_sink", e=e)
             if not loop:
                 loop = asyncio.new_event_loop()
-            loop.create_task(LOG_STORAGE.add(message.rstrip("\n")))  # noqa: RUF006
+            # 存储任务引用到外部列表中
+            _tasks.append(loop.create_task(LOG_STORAGE.add(message.rstrip("\n"))))
 
         logger_.add(
             log_sink, colorize=True, filter=default_filter, format=default_format
