@@ -22,7 +22,7 @@ router = APIRouter(prefix="/database")
 driver: Driver = nonebot.get_driver()
 
 
-@PriorityLifecycle.on_startup()
+@PriorityLifecycle.on_startup(priority=5)
 async def _():
     for plugin in nonebot.get_loaded_plugins():
         module = plugin.name

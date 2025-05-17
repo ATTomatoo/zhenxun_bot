@@ -133,7 +133,7 @@ async def create_schedule(task: Task):
         logger.error(f"动态创建定时任务 {task.name}({task.module}) 失败", e=e)
 
 
-@PriorityLifecycle.on_startup()
+@PriorityLifecycle.on_startup(priority=5)
 async def _():
     """
     初始化插件数据配置

@@ -15,7 +15,7 @@ from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 driver: Driver = nonebot.get_driver()
 
 
-@PriorityLifecycle.on_startup()
+@PriorityLifecycle.on_startup(priority=5)
 async def update_city():
     """
     部分插件需要中国省份城市
@@ -62,7 +62,7 @@ async def _():
     await update_city()
 
 
-@PriorityLifecycle.on_startup()
+@PriorityLifecycle.on_startup(priority=5)
 async def _():
     """开启/禁用插件格式修改"""
     _, is_create = await GroupConsole.get_or_create(group_id=133133133)

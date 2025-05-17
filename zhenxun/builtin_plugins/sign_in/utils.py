@@ -55,7 +55,7 @@ LG_MESSAGE = [
 ]
 
 
-@PriorityLifecycle.on_startup()
+@PriorityLifecycle.on_startup(priority=5)
 async def init_image():
     SIGN_RESOURCE_PATH.mkdir(parents=True, exist_ok=True)
     SIGN_TODAY_CARD_PATH.mkdir(exist_ok=True, parents=True)

@@ -15,7 +15,7 @@ class PriorityLifecycle:
     _data: ClassVar[dict[PriorityLifecycleType, dict[int, list[Callable]]]] = {}
 
     @classmethod
-    def add(cls, hook_type: PriorityLifecycleType, func: Callable, priority: int = 5):
+    def add(cls, hook_type: PriorityLifecycleType, func: Callable, priority: int):
         if hook_type not in cls._data:
             cls._data[hook_type] = {}
         if priority not in cls._data[hook_type]:
@@ -23,7 +23,7 @@ class PriorityLifecycle:
         cls._data[hook_type][priority].append(func)
 
     @classmethod
-    def on_startup(cls, *, priority: int = 5):
+    def on_startup(cls, *, priority: int):
         def wrapper(func):
             cls.add(PriorityLifecycleType.STARTUP, func, priority)
             return func
@@ -31,7 +31,7 @@ class PriorityLifecycle:
         return wrapper
 
     @classmethod
-    def on_shutdown(cls, *, priority: int = 5):
+    def on_shutdown(cls, *, priority: int):
         def wrapper(func):
             cls.add(PriorityLifecycleType.SHUTDOWN, func, priority)
             return func

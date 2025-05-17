@@ -101,6 +101,6 @@ class PluginInitManager:
                     logger.error(f"执行: {module_path}:remove 失败", e=e)
 
 
-@PriorityLifecycle.on_startup()
+@PriorityLifecycle.on_startup(priority=5)
 async def _():
     await PluginInitManager.install_all()

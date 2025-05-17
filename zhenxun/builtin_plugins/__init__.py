@@ -71,7 +71,7 @@ from public.bag_users t1
 """
 
 
-@PriorityLifecycle.on_startup()
+@PriorityLifecycle.on_startup(priority=5)
 async def _():
     await ResourceManager.init_resources()
     """签到与用户的数据迁移"""

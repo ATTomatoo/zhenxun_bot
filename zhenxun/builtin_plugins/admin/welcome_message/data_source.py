@@ -92,7 +92,7 @@ def migrate(path: Path):
         json.dump(new_data, f, ensure_ascii=False, indent=4)
 
 
-@PriorityLifecycle.on_startup()
+@PriorityLifecycle.on_startup(priority=5)
 def _():
     """数据迁移
 

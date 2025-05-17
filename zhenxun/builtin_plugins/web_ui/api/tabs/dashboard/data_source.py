@@ -32,7 +32,7 @@ driver: Driver = nonebot.get_driver()
 CONNECT_TIME = 0
 
 
-@PriorityLifecycle.on_startup()
+@PriorityLifecycle.on_startup(priority=5)
 async def _():
     global CONNECT_TIME
     CONNECT_TIME = int(time.time())
