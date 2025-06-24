@@ -44,7 +44,7 @@ def convert_module_format(data: str | list[str]) -> str | list[str]:
     if isinstance(data, str):
         return [item.strip(",") for item in data.split("<") if item]
     else:
-        return "".join(format(item) for item in data)
+        return "".join(add_disable_marker(item) for item in data)
 
 
 class GroupConsole(Model):
