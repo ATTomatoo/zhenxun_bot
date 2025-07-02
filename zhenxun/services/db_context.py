@@ -1,8 +1,8 @@
 from asyncio import Semaphore
 from collections.abc import Iterable
 from typing import Any, ClassVar
-from urllib.parse import urlparse
 from typing_extensions import Self
+from urllib.parse import urlparse
 
 import nonebot
 from nonebot.utils import is_coroutine_callable
@@ -13,6 +13,8 @@ from tortoise.models import Model as TortoiseModel
 
 from zhenxun.configs.config import BotConfig
 from zhenxun.utils.enum import DbLockType
+from zhenxun.utils.exception import HookPriorityException
+from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 
 from .cache import CacheRoot
 from .log import logger
@@ -167,7 +169,7 @@ class Model(TortoiseModel):
             await CacheRoot.reload(cache_type)
 
 
-class DbUrlMissing(Exception):
+class DbUrlIsNode(HookPriorityException):
     """
     数据库链接地址为空
     """
@@ -183,9 +185,18 @@ class DbConnectError(Exception):
     pass
 
 
+@PriorityLifecycle.on_startup(priority=1)
 async def init():
     if not BotConfig.db_url:
-        raise DbUrlMissing("数据库配置为空，请在.env.dev中配置DB_URL...")
+        error = f"""
+**********************************************************************
+🌟 **************************** 配置为空 ************************* 🌟
+🚀 请打开 WebUi 进行基础配置 🚀
+🌐 配置地址：http://{driver.config.host}:{driver.config.port}/#/configure 🌐
+***********************************************************************
+***********************************************************************
+        """
+        raise DbUrlIsNode("\n" + error.strip())
     try:
         db_url = BotConfig.db_url
         url_scheme = db_url.split(":", 1)[0]
@@ -271,7 +282,6 @@ async def init():
                 logger.debug(f"执行SQL: {sql}")
                 try:
                     await db.execute_query_dict(sql)
-                    # await TestSQL.raw(sql)
                 except Exception as e:
                     logger.debug(f"执行SQL: {sql} 错误...", e=e)
             if sql_list:
