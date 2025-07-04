@@ -4,7 +4,8 @@ from zhenxun.configs.path_config import DATA_PATH, IMAGE_PATH
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
-from zhenxun.utils.enum import BlockType, PluginType
+from zhenxun.services.cache import Cache
+from zhenxun.utils.enum import BlockType, CacheType, PluginType
 from zhenxun.utils.exception import GroupInfoNotFound
 from zhenxun.utils.image_utils import BuildImage, ImageTemplate, RowStyle
 
@@ -245,10 +246,12 @@ class PluginManage:
         参数:
             group_id: 群组id
         """
-        await GroupConsole.filter(group_id=group_id, channel_id__isnull=True).update(
-            status=False
+        group, _ = await GroupConsole.get_or_create(
+            group_id=group_id, channel_id__isnull=True
         )
-
+        group.status = False
+        await group.save(update_fields=["status"])
+		
     @classmethod
     async def wake(cls, group_id: str):
         """醒来
@@ -256,9 +259,11 @@ class PluginManage:
         参数:
             group_id: 群组id
         """
-        await GroupConsole.filter(group_id=group_id, channel_id__isnull=True).update(
-            status=True
+        group, _ = await GroupConsole.get_or_create(
+            group_id=group_id, channel_id__isnull=True
         )
+        group.status = True
+        await group.save(update_fields=["status"])
 
     @classmethod
     async def block(cls, module: str):
@@ -267,7 +272,9 @@ class PluginManage:
         参数:
             module: 模块名
         """
-        await PluginInfo.filter(module=module).update(status=False)
+        if plugin := await PluginInfo.get_plugin(module=module):
+            plugin.status = False
+            await plugin.save(update_fields=["status"])
 
     @classmethod
     async def unblock(cls, module: str):
@@ -276,7 +283,9 @@ class PluginManage:
         参数:
             module: 模块名
         """
-        await PluginInfo.filter(module=module).update(status=True)
+        if plugin := await PluginInfo.get_plugin(module=module):
+            plugin.status = True
+            await plugin.save(update_fields=["status"])
 
     @classmethod
     async def block_group_plugin(cls, plugin_name: str, group_id: str) -> str:

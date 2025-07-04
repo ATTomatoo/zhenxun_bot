@@ -10,8 +10,6 @@ class HookPriorityException(BaseException):
         return self.info
 
 
-
-
 class NotFoundError(Exception):
     """
     未发现

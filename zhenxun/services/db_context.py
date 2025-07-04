@@ -2,7 +2,6 @@ from asyncio import Semaphore
 from collections.abc import Iterable
 from typing import Any, ClassVar
 from typing_extensions import Self
-from urllib.parse import urlparse
 
 import nonebot
 from nonebot.utils import is_coroutine_callable
@@ -32,17 +31,20 @@ def _():
     global CACHE_FLAG
     CACHE_FLAG = True
 
+driver = nonebot.get_driver()
+
 
 class Model(TortoiseModel):
     """
     自动添加模块
+
+    Args:
+        Model_: Model
     """
-
     sem_data: ClassVar[dict[str, dict[str, Semaphore]]] = {}
-
+	
     def __init_subclass__(cls, **kwargs):
-        if cls.__module__ not in MODELS:
-            MODELS.append(cls.__module__)
+        MODELS.append(cls.__module__)
 
         if func := getattr(cls, "_run_script", None):
             SCRIPT_METHOD.append((cls.__module__, func))
@@ -169,7 +171,7 @@ class Model(TortoiseModel):
             await CacheRoot.reload(cache_type)
 
 
-class DbUrlIsNode(HookPriorityException):
+class DbUrlMissing(Exception):
     """
     数据库链接地址为空
     """
@@ -188,6 +190,7 @@ class DbConnectError(Exception):
 @PriorityLifecycle.on_startup(priority=1)
 async def init():
     if not BotConfig.db_url:
+        # raise DbUrlMissing("数据库配置为空，请在.env.dev中配置DB_URL...")
         error = f"""
 **********************************************************************
 🌟 **************************** 配置为空 ************************* 🌟
@@ -196,74 +199,13 @@ async def init():
 ***********************************************************************
 ***********************************************************************
         """
-        raise DbUrlIsNode("\n" + error.strip())
+        raise DbUrlMissing("\n" + error.strip())
     try:
-        db_url = BotConfig.db_url
-        url_scheme = db_url.split(":", 1)[0]
-        config = None
-
-        if url_scheme in ("postgres", "postgresql"):
-            # 解析 db_url
-            url = urlparse(db_url)
-            credentials = {
-                "host": url.hostname,
-                "port": url.port or 5432,
-                "user": url.username,
-                "password": url.password,
-                "database": url.path.lstrip("/"),
-                "minsize": 1,
-                "maxsize": 50,
-            }
-            config = {
-                "connections": {
-                    "default": {
-                        "engine": "tortoise.backends.asyncpg",
-                        "credentials": credentials,
-                    }
-                },
-                "apps": {
-                    "models": {
-                        "models": MODELS,
-                        "default_connection": "default",
-                    }
-                },
-            }
-        elif url_scheme in ("mysql", "mysql+aiomysql"):
-            url = urlparse(db_url)
-            credentials = {
-                "host": url.hostname,
-                "port": url.port or 3306,
-                "user": url.username,
-                "password": url.password,
-                "database": url.path.lstrip("/"),
-                "minsize": 1,
-                "maxsize": 50,
-            }
-            config = {
-                "connections": {
-                    "default": {
-                        "engine": "tortoise.backends.mysql",
-                        "credentials": credentials,
-                    }
-                },
-                "apps": {
-                    "models": {
-                        "models": MODELS,
-                        "default_connection": "default",
-                    }
-                },
-            }
-        else:
-            # sqlite 或其它，直接用 db_url
-            await Tortoise.init(
-                db_url=db_url,
-                modules={"models": MODELS},
-                timezone="Asia/Shanghai",
-            )
-
-        if config:
-            await Tortoise.init(config=config)
-
+        await Tortoise.init(
+            db_url=BotConfig.db_url,
+            modules={"models": MODELS},
+            timezone="Asia/Shanghai",
+        )
         if SCRIPT_METHOD:
             db = Tortoise.get_connection("default")
             logger.debug(
@@ -282,6 +224,7 @@ async def init():
                 logger.debug(f"执行SQL: {sql}")
                 try:
                     await db.execute_query_dict(sql)
+                    # await TestSQL.raw(sql)
                 except Exception as e:
                     logger.debug(f"执行SQL: {sql} 错误...", e=e)
             if sql_list:

@@ -4,6 +4,7 @@ from zhenxun.utils.http_utils import AsyncHttpx
 
 from .const import (
     ARCHIVE_URL_FORMAT,
+    GITEE_RAW_CONTENT_FORMAT,
     RAW_CONTENT_FORMAT,
     RELEASE_ASSETS_FORMAT,
     RELEASE_SOURCE_FORMAT,
@@ -21,15 +22,11 @@ async def __get_fastest_formats(formats: dict[str, str]) -> list[str]:
 async def get_fastest_raw_formats() -> list[str]:
     """获取最快的raw下载地址格式"""
     formats: dict[str, str] = {
+        "https://gitee.com/": GITEE_RAW_CONTENT_FORMAT,
         "https://raw.githubusercontent.com/": RAW_CONTENT_FORMAT,
         "https://ghproxy.cc/": f"https://ghproxy.cc/{RAW_CONTENT_FORMAT}",
-        "https://mirror.ghproxy.com/": f"https://mirror.ghproxy.com/{RAW_CONTENT_FORMAT}",
         "https://gh-proxy.com/": f"https://gh-proxy.com/{RAW_CONTENT_FORMAT}",
         "https://cdn.jsdelivr.net/": "https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}",
-        #"https://raw.gitcode.com/": "https://raw.gitcode.com/qq_41605780/{repo}/raw/{branch}/{path}",  # ✅ 新增 GitCode raw 格式
-        #"https://raw.gitcode.com/": "https://raw.gitcode.com/ATTomato/{repo}/raw/{branch}/{path}"
-        #"https://raw.gitcode.com/": "https://raw.gitcode.com/{owner}/{repo}/raw/{branch}/{path}"
-
     }
     return await __get_fastest_formats(formats)
 
@@ -40,7 +37,6 @@ async def get_fastest_archive_formats() -> list[str]:
     formats: dict[str, str] = {
         "https://github.com/": ARCHIVE_URL_FORMAT,
         "https://ghproxy.cc/": f"https://ghproxy.cc/{ARCHIVE_URL_FORMAT}",
-        "https://mirror.ghproxy.com/": f"https://mirror.ghproxy.com/{ARCHIVE_URL_FORMAT}",
         "https://gh-proxy.com/": f"https://gh-proxy.com/{ARCHIVE_URL_FORMAT}",
     }
     return await __get_fastest_formats(formats)
@@ -52,7 +48,6 @@ async def get_fastest_release_formats() -> list[str]:
     formats: dict[str, str] = {
         "https://objects.githubusercontent.com/": RELEASE_ASSETS_FORMAT,
         "https://ghproxy.cc/": f"https://ghproxy.cc/{RELEASE_ASSETS_FORMAT}",
-        "https://mirror.ghproxy.com/": f"https://mirror.ghproxy.com/{RELEASE_ASSETS_FORMAT}",
         "https://gh-proxy.com/": f"https://gh-proxy.com/{RELEASE_ASSETS_FORMAT}",
     }
     return await __get_fastest_formats(formats)

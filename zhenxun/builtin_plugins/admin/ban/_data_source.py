@@ -8,6 +8,7 @@ from zhenxun.models.level_user import LevelUser
 from zhenxun.services.log import logger
 from zhenxun.utils.image_utils import BuildImage, ImageTemplate
 
+
 async def call_ban(user_id: str):
     """调用ban
 
@@ -16,7 +17,6 @@ async def call_ban(user_id: str):
     """
     await BanConsole.ban(user_id, None, 9, 60 * 12)
     logger.info("辱骂次数过多，已将用户加入黑名单...", "ban", session=user_id)
-
 
 
 class BanManage:

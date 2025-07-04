@@ -12,7 +12,7 @@ from aiocache.serializers import JsonSerializer
 import nonebot
 from nonebot.compat import model_dump
 from nonebot.utils import is_coroutine_callable
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 from zhenxun.services.log import logger
 
@@ -121,7 +121,7 @@ class CacheData(BaseModel):
     lazy_load: bool = True  # 默认延迟加载
     result_model: type | None = None
     _keys: set[str] = set()  # 存储所有缓存键
-    _cache: BaseCache | AioCache
+    _cache: BaseCache | AioCache = PrivateAttr()
 
     class Config:
         arbitrary_types_allowed = True

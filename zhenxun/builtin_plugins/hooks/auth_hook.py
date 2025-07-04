@@ -14,9 +14,7 @@ from .auth_checker import LimitManager, auth
 
 # # 权限检测
 @run_preprocessor
-async def _(
-    matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: UniMsg
-):
+async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: UniMsg):
     start_time = time.time()
     await auth(
         matcher,

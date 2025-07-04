@@ -3,7 +3,6 @@ from tortoise import fields
 from zhenxun.services.db_context import Model
 from zhenxun.utils.enum import CacheType
 
-
 class LevelUser(Model):
     id = fields.IntField(pk=True, generated=True, auto_increment=True)
     """自增id"""
@@ -56,7 +55,7 @@ class LevelUser(Model):
             level: 权限等级
             group_flag: 是否被自动更新刷新权限 0:是, 1:否.
         """
-        if await cls.exists(user_id=user_id, group_id=group_id, user_level=level):
+        if await cls.exists(user_id=user_id, group_id=group_id, level=level):
             # 权限相同时跳过
             return
         await cls.update_or_create(
