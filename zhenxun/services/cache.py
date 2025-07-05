@@ -11,6 +11,7 @@ from aiocache.serializers import JsonSerializer
 from nonebot.compat import model_dump
 from nonebot.utils import is_coroutine_callable
 from pydantic import BaseModel, PrivateAttr
+
 from zhenxun.services.log import logger
 
 __all__ = ["Cache", "CacheData", "CacheRoot"]
