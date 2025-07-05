@@ -44,7 +44,8 @@ class Model(TortoiseModel):
     sem_data: ClassVar[dict[str, dict[str, Semaphore]]] = {}
 	
     def __init_subclass__(cls, **kwargs):
-        MODELS.append(cls.__module__)
+        if cls.__module__ not in MODELS:
+            MODELS.append(cls.__module__)
 
         if func := getattr(cls, "_run_script", None):
             SCRIPT_METHOD.append((cls.__module__, func))
@@ -171,7 +172,7 @@ class Model(TortoiseModel):
             await CacheRoot.reload(cache_type)
 
 
-class DbUrlMissing(Exception):
+class DbUrlIsNode(HookPriorityException):
     """
     数据库链接地址为空
     """
@@ -190,7 +191,7 @@ class DbConnectError(Exception):
 @PriorityLifecycle.on_startup(priority=1)
 async def init():
     if not BotConfig.db_url:
-        # raise DbUrlMissing("数据库配置为空，请在.env.dev中配置DB_URL...")
+        # raise DbUrlIsNode("数据库配置为空，请在.env.dev中配置DB_URL...")
         error = f"""
 **********************************************************************
 🌟 **************************** 配置为空 ************************* 🌟
@@ -199,7 +200,7 @@ async def init():
 ***********************************************************************
 ***********************************************************************
         """
-        raise DbUrlMissing("\n" + error.strip())
+        raise DbUrlIsNode("\n" + error.strip())
     try:
         await Tortoise.init(
             db_url=BotConfig.db_url,
