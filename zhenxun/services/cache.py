@@ -6,7 +6,6 @@ from typing import Any, ClassVar, Generic, TypeVar
 
 import nonebot
 from aiocache import Cache as AioCache
-# from aiocache.backends.redis import RedisCache
 from aiocache.base import BaseCache
 from aiocache.serializers import JsonSerializer
 from nonebot.compat import model_dump
