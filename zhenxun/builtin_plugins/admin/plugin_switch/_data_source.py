@@ -7,6 +7,7 @@ from zhenxun.models.task_info import TaskInfo
 from zhenxun.utils.enum import BlockType, PluginType
 from zhenxun.utils.exception import GroupInfoNotFound
 from zhenxun.utils.image_utils import BuildImage, ImageTemplate, RowStyle
+
 # from zhenxun.services.cache import Cache
 # from zhenxun.utils.enum import CacheType
 
