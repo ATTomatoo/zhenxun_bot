@@ -3,6 +3,7 @@ from tortoise import fields
 from zhenxun.services.db_context import Model
 from zhenxun.utils.enum import CacheType
 
+
 class LevelUser(Model):
     id = fields.IntField(pk=True, generated=True, auto_increment=True)
     """自增id"""

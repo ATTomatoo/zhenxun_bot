@@ -208,7 +208,7 @@ class CacheData(BaseModel):
     async def get_data(self) -> Any:
         """从缓存获取数据"""
         try:
-            data = await self._cache.get(self.name)
+            data = await self._cache.get(self.name)# type: ignore
             logger.debug(f"获取缓存 {self.name} 数据: {data}")
 
             # 如果数据为空，尝试重新加载
@@ -307,11 +307,11 @@ class CacheData(BaseModel):
             logger.debug(f"设置缓存 {self.name} 序列化后数据: {serialized_value}")
 
             # 2. 删除旧数据
-            await self._cache.delete(self.name)
+            await self._cache.delete(self.name)# type: ignore
             logger.debug(f"删除缓存 {self.name} 旧数据")
 
             # 3. 设置新数据
-            await self._cache.set(self.name, serialized_value, ttl=self.expire)
+            await self._cache.set(self.name, serialized_value, ttl=self.expire)# type: ignore
             logger.debug(f"设置缓存 {self.name} 新数据完成")
 
         except Exception as e:
@@ -321,7 +321,7 @@ class CacheData(BaseModel):
     async def delete_data(self):
         """删除缓存数据"""
         try:
-            await self._cache.delete(self.name)
+            await self._cache.delete(self.name)# type: ignore
         except Exception as e:
             logger.error(f"删除缓存 {self.name}", e=e)
 
@@ -428,7 +428,7 @@ class CacheData(BaseModel):
         """
         cache_key = self._get_cache_key(key)
         try:
-            data = await self._cache.get(cache_key)
+            data = await self._cache.get(cache_key)# type: ignore
             logger.debug(f"获取缓存 {cache_key} 数据: {data}")
 
             if self.result_model:
@@ -467,7 +467,7 @@ class CacheData(BaseModel):
             for key in self._keys:
                 # 提取原始键名（去掉前缀）
                 original_key = key.split(":", 1)[1]
-                data = await self._cache.get(key)
+                data = await self._cache.get(key)# type: ignore
                 if self.result_model:
                     result[original_key] = self._deserialize_value(
                         data, self.result_model
@@ -484,7 +484,7 @@ class CacheData(BaseModel):
         cache_key = self._get_cache_key(key)
         try:
             serialized_value = self._serialize_value(value)
-            await self._cache.set(cache_key, serialized_value, ttl=self.expire)
+            await self._cache.set(cache_key, serialized_value, ttl=self.expire)# type: ignore
             self._keys.add(cache_key)  # 添加到键列表
             logger.debug(f"设置缓存 {cache_key} 数据完成")
         except Exception as e:
@@ -495,7 +495,7 @@ class CacheData(BaseModel):
         """删除指定键的缓存数据"""
         cache_key = self._get_cache_key(key)
         try:
-            await self._cache.delete(cache_key)
+            await self._cache.delete(cache_key)# type: ignore
             self._keys.discard(cache_key)  # 从键列表中移除
             logger.debug(f"删除缓存 {cache_key} 完成")
         except Exception as e:
@@ -505,7 +505,7 @@ class CacheData(BaseModel):
         """清除所有缓存数据"""
         try:
             for key in list(self._keys):  # 使用列表复制避免在迭代时修改
-                await self._cache.delete(key)
+                await self._cache.delete(key)# type: ignore
             self._keys.clear()
             logger.debug(f"清除缓存 {self.name} 完成")
         except Exception as e:
@@ -524,7 +524,7 @@ class CacheManager:
         if self._cache_instance is None:
             if config.redis_host:
                 self._cache_instance = AioCache(
-                    AioCache.REDIS,
+                    AioCache.REDIS,# type: ignore
                     serializer=JsonSerializer(),
                     namespace="zhenxun_cache",
                     timeout=30,  # 操作超时时间
@@ -546,12 +546,12 @@ class CacheManager:
 
     async def close(self):
         if self._cache_instance:
-            await self._cache_instance.close()
+            await self._cache_instance.close()# type: ignore
 
     async def verify_connection(self):
         """连接测试"""
         try:
-            await self._cache.get("__test__")
+            await self._cache.get("__test__")# type: ignore
         except Exception as e:
             logger.error("连接失败", LOG_COMMAND, e=e)
             raise
@@ -582,13 +582,14 @@ class CacheManager:
             if _name in self._data:
                 raise DbCacheException(f"缓存 {name} 已存在")
 
-            self._data[_name] = CacheData(
+            cache_data = CacheData(
                 name=_name,
                 func=func,
                 expire=expire,
                 lazy_load=lazy_load,
-                _cache=self._cache,
             )
+            cache_data._cache = self._cache
+            self._data[_name] = cache_data
             return func
 
         return wrapper
