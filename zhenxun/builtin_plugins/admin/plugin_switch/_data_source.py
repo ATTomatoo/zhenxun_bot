@@ -251,7 +251,7 @@ class PluginManage:
         )
         group.status = False
         await group.save(update_fields=["status"])
-	
+
     @classmethod
     async def wake(cls, group_id: str):
         """醒来
