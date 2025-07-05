@@ -4,11 +4,11 @@ from zhenxun.configs.path_config import DATA_PATH, IMAGE_PATH
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
-# from zhenxun.services.cache import Cache
 from zhenxun.utils.enum import BlockType, PluginType
-# from zhenxun.utils.enum import CacheType
 from zhenxun.utils.exception import GroupInfoNotFound
 from zhenxun.utils.image_utils import BuildImage, ImageTemplate, RowStyle
+# from zhenxun.services.cache import Cache
+# from zhenxun.utils.enum import CacheType
 
 HELP_FILE = IMAGE_PATH / "SIMPLE_HELP.png"
 
