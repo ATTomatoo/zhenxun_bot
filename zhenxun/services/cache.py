@@ -587,7 +587,7 @@ class CacheManager:
                 func=func,
                 expire=expire,
                 lazy_load=lazy_load,
-                _cache=self.cache,
+                _cache=self._cache,
             )
             return func
 
