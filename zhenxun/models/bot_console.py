@@ -29,7 +29,7 @@ class BotConsole(Model):
     class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "bot_console"
         table_description = "Bot数据表"
-		
+	
     cache_type = CacheType.BOT
 
     @staticmethod

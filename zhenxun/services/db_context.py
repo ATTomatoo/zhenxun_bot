@@ -42,7 +42,7 @@ class Model(TortoiseModel):
         Model_: Model
     """
     sem_data: ClassVar[dict[str, dict[str, Semaphore]]] = {}
-	
+
     def __init_subclass__(cls, **kwargs):
         if cls.__module__ not in MODELS:
             MODELS.append(cls.__module__)

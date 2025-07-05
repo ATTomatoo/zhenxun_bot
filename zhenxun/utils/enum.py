@@ -50,7 +50,7 @@ class CacheType(StrEnum):
     """用户权限"""
     LIMIT = "GLOBAL_LIMIT"
     """插件限制"""
-	
+
 class BankHandleType(StrEnum):
     DEPOSIT = "DEPOSIT"
     """存款"""
