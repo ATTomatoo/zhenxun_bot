@@ -582,13 +582,14 @@ class CacheManager:
             if _name in self._data:
                 raise DbCacheException(f"缓存 {name} 已存在")
 
-            self._data[_name] = CacheData(
+            cache_data = CacheData(
                 name=_name,
                 func=func,
                 expire=expire,
                 lazy_load=lazy_load,
-                _cache=self._cache,
             )
+            cache_data._cache = self._cache
+            self._data[_name] = cache_data
             return func
 
         return wrapper
