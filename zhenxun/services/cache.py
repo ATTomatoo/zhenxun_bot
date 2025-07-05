@@ -568,33 +568,30 @@ class CacheManager:
                 except Exception as e:
                     logger.error(f"初始化缓存 {name} 失败: {e}")
 
-def new(self, name: str, lazy_load: bool = True, expire: int = 600):
-    """注册新缓存
+    def new(self, name: str, lazy_load: bool = True, expire: int = 600):
+        """注册新缓存
 
-    参数:
-        name: 缓存名称
-        lazy_load: 是否延迟加载，默认为True。为False时会在程序启动时自动加载
-        expire: 过期时间（秒）
-    """
+        参数:
+            name: 缓存名称
+            lazy_load: 是否延迟加载，默认为True。为False时会在程序启动时自动加载
+            expire: 过期时间（秒）
+        """
 
-    def wrapper(func: Callable):
-        _name = name.upper()
-        if _name in self._data:
-            raise DbCacheException(f"缓存 {name} 已存在")
+        def wrapper(func: Callable):
+            _name = name.upper()
+            if _name in self._data:
+                raise DbCacheException(f"缓存 {name} 已存在")
 
-        # 先创建 CacheData 实例（不传入 _cache）
-        cache_data = CacheData(
-            name=_name,
-            func=func,
-            expire=expire,
-            lazy_load=lazy_load,
-        )
-        # 然后手动设置 _cache 属性
-        cache_data._cache = self._cache
-        self._data[_name] = cache_data
-        return func
+            self._data[_name] = CacheData(
+                name=_name,
+                func=func,
+                expire=expire,
+                lazy_load=lazy_load,
+                _cache=self._cache,
+            )
+            return func
 
-    return wrapper
+        return wrapper
 
     def listener(self, name: str):
         """创建缓存监听器"""
