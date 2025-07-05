@@ -523,7 +523,7 @@ class CacheManager:
         if self._cache_instance is None:
             if config.redis_host:
                 self._cache_instance = AioCache(
-                    AioCache.REDIS,
+                    AioCache.REDIS, # type: ignore
                     serializer=JsonSerializer(),
                     namespace="zhenxun_cache",
                     timeout=30,  # 操作超时时间
@@ -586,7 +586,7 @@ class CacheManager:
                 func=func,
                 expire=expire,
                 lazy_load=lazy_load,
-                _cache=self._cache,
+                _cache=self._cache, # type: ignore
             )
             return func
 
