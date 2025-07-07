@@ -1,4 +1,3 @@
-
 from asyncio import Semaphore
 from collections.abc import Iterable
 from typing import Any, ClassVar
@@ -31,6 +30,7 @@ CACHE_FLAG = False
 def _():
     global CACHE_FLAG
     CACHE_FLAG = True
+
 
 class Model(TortoiseModel):
     """
