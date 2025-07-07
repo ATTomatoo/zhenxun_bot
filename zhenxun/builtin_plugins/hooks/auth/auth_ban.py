@@ -9,7 +9,7 @@ from tortoise.exceptions import DoesNotExist, MultipleObjectsReturned
 from zhenxun.configs.config import Config
 from zhenxun.models.ban_console import BanConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.cache import Cache
+from zhenxun.services.cache import Cache, CacheRoot
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import CacheType, PluginType
 from zhenxun.utils.utils import EntityIDs, get_entity_ids
@@ -75,7 +75,8 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                     group_id=group_id
                 )
                 if ban_record.duration > 0 or ban_record.duration == -1:
-                    await cache.set_key(f"{user_id}:{group_id}", ban_record)
+                    cache_data = await CacheRoot.get_cache("BAN")
+                    await cache_data.set_key(f"{user_id}:{group_id}", ban_record)
                     return await BanConsole.check_ban_time(user_id, group_id)
             except DoesNotExist:
                 pass
@@ -88,7 +89,8 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                     group_id=""
                 )
                 if ban_record.duration > 0 or ban_record.duration == -1:
-                    await cache.set_key(f"{user_id}:", ban_record)
+                    cache_data = await CacheRoot.get_cache("BAN")
+                    await cache_data.set_key(f"{user_id}:", ban_record)
                     return await BanConsole.check_ban_time(user_id, group_id)
             except DoesNotExist:
                 pass
@@ -101,7 +103,8 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                     group_id=group_id
                 )
                 if ban_record.duration > 0 or ban_record.duration == -1:
-                    await cache.set_key(f":{group_id}", ban_record)
+                    cache_data = await CacheRoot.get_cache("BAN")
+                    await cache_data.set_key(f":{group_id}", ban_record)
                     return await BanConsole.check_ban_time(None, group_id)
             except DoesNotExist:
                 pass
