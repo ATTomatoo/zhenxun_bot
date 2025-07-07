@@ -56,7 +56,7 @@ class LevelUser(Model):
             level: 权限等级
             group_flag: 是否被自动更新刷新权限 0:是, 1:否.
         """
-        if await cls.exists(user_id=user_id, group_id=group_id, level=level):
+        if await cls.exists(user_id=user_id, group_id=group_id, user_level=level):
             # 权限相同时跳过
             return
         await cls.update_or_create(
@@ -99,10 +99,9 @@ class LevelUser(Model):
         if group_id:
             if user := await cls.get_or_none(user_id=user_id, group_id=group_id):
                 return user.user_level >= level
-        else:
-            if user_list := await cls.filter(user_id=user_id).all():
-                user = max(user_list, key=lambda x: x.user_level)
-                return user.user_level >= level
+        elif user_list := await cls.filter(user_id=user_id).all():
+            user = max(user_list, key=lambda x: x.user_level)
+            return user.user_level >= level
         return False
 
     @classmethod
