@@ -75,7 +75,7 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                     group_id=group_id
                 )
                 if ban_record.duration > 0 or ban_record.duration == -1:
-                    await cache.set(user_id, group_id, ban_record)
+                    await cache.set_key(f"{user_id}:{group_id}", ban_record)
                     return await BanConsole.check_ban_time(user_id, group_id)
             except DoesNotExist:
                 pass
@@ -88,7 +88,7 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                     group_id=""
                 )
                 if ban_record.duration > 0 or ban_record.duration == -1:
-                    await cache.set(user_id, "", ban_record)
+                    await cache.set_key(f"{user_id}:", ban_record)
                     return await BanConsole.check_ban_time(user_id, group_id)
             except DoesNotExist:
                 pass
@@ -101,7 +101,7 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                     group_id=group_id
                 )
                 if ban_record.duration > 0 or ban_record.duration == -1:
-                    await cache.set("", group_id, ban_record)
+                    await cache.set_key(f":{group_id}", ban_record)
                     return await BanConsole.check_ban_time(None, group_id)
             except DoesNotExist:
                 pass
