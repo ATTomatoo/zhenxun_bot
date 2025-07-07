@@ -1,3 +1,5 @@
+# db_context.py
+
 from asyncio import Semaphore
 from collections.abc import Iterable
 from typing import Any, ClassVar
@@ -31,16 +33,8 @@ def _():
     global CACHE_FLAG
     CACHE_FLAG = True
 
-driver = nonebot.get_driver()
-
 
 class Model(TortoiseModel):
-    """
-    自动添加模块
-
-    Args:
-        Model_: Model
-    """
     sem_data: ClassVar[dict[str, dict[str, Semaphore]]] = {}
 
     def __init_subclass__(cls, **kwargs):
@@ -50,7 +44,6 @@ class Model(TortoiseModel):
         if func := getattr(cls, "_run_script", None):
             SCRIPT_METHOD.append((cls.__module__, func))
         if enable_lock := getattr(cls, "enable_lock", []):
-            """创建锁"""
             cls.sem_data[cls.__module__] = {}
             for lock in enable_lock:
                 cls.sem_data[cls.__module__][lock] = Semaphore(1)
@@ -65,7 +58,9 @@ class Model(TortoiseModel):
 
     @classmethod
     async def create(
-        cls, using_db: BaseDBAsyncClient | None = None, **kwargs: Any
+        cls,
+        using_db: BaseDBAsyncClient | None = None,
+        **kwargs: Any,
     ) -> Self:
         return await super().create(using_db=using_db, **kwargs)
 
@@ -98,7 +93,7 @@ class Model(TortoiseModel):
         return result
 
     @classmethod
-    async def bulk_create(  # type: ignore
+    async def bulk_create(
         cls,
         objects: Iterable[Self],
         batch_size: int | None = None,
@@ -120,7 +115,7 @@ class Model(TortoiseModel):
         return result
 
     @classmethod
-    async def bulk_update(  # type: ignore
+    async def bulk_update(
         cls,
         objects: Iterable[Self],
         fields: Iterable[str],
@@ -144,10 +139,11 @@ class Model(TortoiseModel):
         force_create: bool = False,
         force_update: bool = False,
     ):
-        if getattr(self, "id", None) is None:
-            sem = self.get_semaphore(DbLockType.CREATE)
-        else:
-            sem = self.get_semaphore(DbLockType.UPDATE)
+        sem = self.get_semaphore(
+            DbLockType.CREATE
+            if getattr(self, "id", None) is None
+            else DbLockType.UPDATE
+        )
         if sem:
             async with sem:
                 await super().save(
@@ -173,25 +169,16 @@ class Model(TortoiseModel):
 
 
 class DbUrlIsNode(HookPriorityException):
-    """
-    数据库链接地址为空
-    """
-
     pass
 
 
 class DbConnectError(Exception):
-    """
-    数据库连接错误
-    """
-
     pass
 
 
 @PriorityLifecycle.on_startup(priority=1)
 async def init():
     if not BotConfig.db_url:
-        # raise DbUrlIsNode("数据库配置为空，请在.env.dev中配置DB_URL...")
         error = f"""
 **********************************************************************
 🌟 **************************** 配置为空 ************************* 🌟
@@ -209,10 +196,7 @@ async def init():
         )
         if SCRIPT_METHOD:
             db = Tortoise.get_connection("default")
-            logger.debug(
-                "即将运行SCRIPT_METHOD方法, 合计 "
-                f"<u><y>{len(SCRIPT_METHOD)}</y></u> 个..."
-            )
+            logger.debug(f"即将运行 SCRIPT_METHOD 共 {len(SCRIPT_METHOD)} 个...")
             sql_list = []
             for module, func in SCRIPT_METHOD:
                 try:
@@ -220,18 +204,22 @@ async def init():
                     if sql:
                         sql_list += sql
                 except Exception as e:
-                    logger.debug(f"{module} 执行SCRIPT_METHOD方法出错...", e=e)
+                    logger.debug(f"{module} 执行 SCRIPT_METHOD 错误", e=e)
             for sql in sql_list:
-                logger.debug(f"执行SQL: {sql}")
+                logger.debug(f"执行 SQL: {sql}")
                 try:
                     await db.execute_query_dict(sql)
-                    # await TestSQL.raw(sql)
                 except Exception as e:
-                    logger.debug(f"执行SQL: {sql} 错误...", e=e)
+                    logger.debug(f"执行 SQL 失败: {sql}", e=e)
             if sql_list:
-                logger.debug("SCRIPT_METHOD方法执行完毕!")
+                logger.debug("SCRIPT_METHOD 执行完毕")
         await Tortoise.generate_schemas()
-        logger.info("Database loaded successfully!")
+
+        # 正确初始化缓存
+        await CacheRoot.init_non_lazy_caches()
+
+        logger.info("Database & Cache loaded successfully!")
+
     except Exception as e:
         raise DbConnectError(f"数据库连接错误... e:{e}") from e
 
