@@ -5,8 +5,7 @@ from nonebot.adapters import Bot
 from nonebot.matcher import Matcher
 from nonebot_plugin_alconna import At
 from nonebot_plugin_uninfo import Uninfo
-from tortoise.exceptions import MultipleObjectsReturned, DoesNotExist
-
+from tortoise.exceptions import DoesNotExist, MultipleObjectsReturned
 from zhenxun.configs.config import Config
 from zhenxun.models.ban_console import BanConsole
 from zhenxun.models.plugin_info import PluginInfo
