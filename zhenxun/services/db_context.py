@@ -1,8 +1,6 @@
-# db_context.py
-
 from asyncio import Semaphore
 from collections.abc import Iterable
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Optional, TypeVar, Generic
 from typing_extensions import Self
 
 import nonebot
@@ -34,7 +32,10 @@ def _():
     CACHE_FLAG = True
 
 
-class Model(TortoiseModel):
+_TModel = TypeVar("_TModel", bound="Model")
+
+
+class Model(TortoiseModel, Generic[_TModel]):
     sem_data: ClassVar[dict[str, dict[str, Semaphore]]] = {}
 
     def __init_subclass__(cls, **kwargs):
@@ -58,19 +59,19 @@ class Model(TortoiseModel):
 
     @classmethod
     async def create(
-        cls,
-        using_db: BaseDBAsyncClient | None = None,
+        cls: type[_TModel],
+        using_db: Optional[BaseDBAsyncClient] = None,
         **kwargs: Any,
-    ) -> Self:
+    ) -> _TModel:
         return await super().create(using_db=using_db, **kwargs)
 
     @classmethod
     async def get_or_create(
-        cls,
-        defaults: dict | None = None,
-        using_db: BaseDBAsyncClient | None = None,
+        cls: type[_TModel],
+        defaults: Optional[dict] = None,
+        using_db: Optional[BaseDBAsyncClient] = None,
         **kwargs: Any,
-    ) -> tuple[Self, bool]:
+    ) -> tuple[_TModel, bool]:
         result, is_create = await super().get_or_create(
             defaults=defaults, using_db=using_db, **kwargs
         )
@@ -80,11 +81,11 @@ class Model(TortoiseModel):
 
     @classmethod
     async def update_or_create(
-        cls,
-        defaults: dict | None = None,
-        using_db: BaseDBAsyncClient | None = None,
+        cls: type[_TModel],
+        defaults: Optional[dict] = None,
+        using_db: Optional[BaseDBAsyncClient] = None,
         **kwargs: Any,
-    ) -> tuple[Self, bool]:
+    ) -> tuple[_TModel, bool]:
         result = await super().update_or_create(
             defaults=defaults, using_db=using_db, **kwargs
         )
@@ -94,14 +95,14 @@ class Model(TortoiseModel):
 
     @classmethod
     async def bulk_create(
-        cls,
-        objects: Iterable[Self],
-        batch_size: int | None = None,
+        cls: type[_TModel],
+        objects: Iterable[_TModel],
+        batch_size: Optional[int] = None,
         ignore_conflicts: bool = False,
-        update_fields: Iterable[str] | None = None,
-        on_conflict: Iterable[str] | None = None,
-        using_db: BaseDBAsyncClient | None = None,
-    ) -> list[Self]:
+        update_fields: Optional[Iterable[str]] = None,
+        on_conflict: Optional[Iterable[str]] = None,
+        using_db: Optional[BaseDBAsyncClient] = None,
+    ) -> list[_TModel]:
         result = await super().bulk_create(
             objects=objects,
             batch_size=batch_size,
@@ -116,11 +117,11 @@ class Model(TortoiseModel):
 
     @classmethod
     async def bulk_update(
-        cls,
-        objects: Iterable[Self],
+        cls: type[_TModel],
+        objects: Iterable[_TModel],
         fields: Iterable[str],
-        batch_size: int | None = None,
-        using_db: BaseDBAsyncClient | None = None,
+        batch_size: Optional[int] = None,
+        using_db: Optional[BaseDBAsyncClient] = None,
     ) -> int:
         result = await super().bulk_update(
             objects=objects,
@@ -133,12 +134,12 @@ class Model(TortoiseModel):
         return result
 
     async def save(
-        self,
-        using_db: BaseDBAsyncClient | None = None,
-        update_fields: Iterable[str] | None = None,
+        self: _TModel,
+        using_db: Optional[BaseDBAsyncClient] = None,
+        update_fields: Optional[Iterable[str]] = None,
         force_create: bool = False,
         force_update: bool = False,
-    ):
+    ) -> None:
         sem = self.get_semaphore(
             DbLockType.CREATE
             if getattr(self, "id", None) is None
@@ -162,7 +163,7 @@ class Model(TortoiseModel):
         if CACHE_FLAG and (cache_type := getattr(self, "cache_type", None)):
             await CacheRoot.reload(cache_type)
 
-    async def delete(self, using_db: BaseDBAsyncClient | None = None):
+    async def delete(self: _TModel, using_db: Optional[BaseDBAsyncClient] = None) -> None:
         await super().delete(using_db=using_db)
         if CACHE_FLAG and (cache_type := getattr(self, "cache_type", None)):
             await CacheRoot.reload(cache_type)
