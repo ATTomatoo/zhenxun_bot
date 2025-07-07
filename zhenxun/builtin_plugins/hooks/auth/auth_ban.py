@@ -76,6 +76,8 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                 )
                 if ban_record.duration > 0 or ban_record.duration == -1:
                     cache_data = await CacheRoot.get_cache("BAN")
+                    if cache_data is None:
+                        raise RuntimeError("BAN 缓存未初始化")
                     await cache_data.set_key(f"{user_id}:{group_id}", ban_record)
                     return await BanConsole.check_ban_time(user_id, group_id)
             except DoesNotExist:
@@ -90,6 +92,8 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                 )
                 if ban_record.duration > 0 or ban_record.duration == -1:
                     cache_data = await CacheRoot.get_cache("BAN")
+                    if cache_data is None:
+                        raise RuntimeError("BAN 缓存未初始化")
                     await cache_data.set_key(f"{user_id}:", ban_record)
                     return await BanConsole.check_ban_time(user_id, group_id)
             except DoesNotExist:
@@ -104,6 +108,8 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                 )
                 if ban_record.duration > 0 or ban_record.duration == -1:
                     cache_data = await CacheRoot.get_cache("BAN")
+                    if cache_data is None:
+                        raise RuntimeError("BAN 缓存未初始化")
                     await cache_data.set_key(f":{group_id}", ban_record)
                     return await BanConsole.check_ban_time(None, group_id)
             except DoesNotExist:
@@ -163,8 +169,8 @@ async def group_handle(cache: Cache[BanConsole], group_id: str):
         remaining = await is_ban(None, group_id)
         if remaining != 0:
             raise SkipPluginException(
-    f"群组 {group_id} 处于封禁中，剩余时间: {format_time(remaining)}"
-)
+                f"群组 {group_id} 处于封禁中，剩余时间: {format_time(remaining)}"
+            )
     except MultipleObjectsReturned:
         logger.warning("群组封禁记录重复，正在清理...", LOGGER_COMMAND)
         ids = await BanConsole.filter(
@@ -205,8 +211,8 @@ async def user_handle(
             )
 
         raise SkipPluginException(
-    f"用户 {entity.user_id} 处于封禁中，剩余时间: {time_str}"
-)
+            f"用户 {entity.user_id} 处于封禁中，剩余时间: {time_str}"
+        )
 
     except MultipleObjectsReturned:
         logger.warning("用户封禁记录重复，正在清理...", LOGGER_COMMAND)
