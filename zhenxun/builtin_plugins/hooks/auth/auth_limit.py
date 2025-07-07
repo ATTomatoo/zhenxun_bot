@@ -8,6 +8,7 @@ from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.plugin_limit import PluginLimit
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import LimitWatchType, PluginLimitType
+from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 from zhenxun.utils.message import MessageUtils
 from zhenxun.utils.utils import (
     CountLimiter,
@@ -22,7 +23,7 @@ from .exception import SkipPluginException
 driver = nonebot.get_driver()
 
 
-@driver.on_startup
+@PriorityLifecycle.on_startup(priority=5)
 async def _():
     """初始化限制"""
     await LimitManager.init_limit()
