@@ -114,7 +114,7 @@ class BanManage:
         if not is_superuser and user_id and session.id1:
             user_level = await LevelUser.get_user_level(session.id1, group_id)
         if idx:
-            ban_data = await BanConsole.get_or_none(id=idx)
+            ban_data = await BanConsole.get_ban(id=idx)
             if not ban_data:
                 return False, "该用户/群组不在黑名单中捏..."
             if ban_data.ban_level > user_level:

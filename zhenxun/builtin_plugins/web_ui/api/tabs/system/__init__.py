@@ -45,10 +45,10 @@ async def _(path: str | None = None) -> Result[list[DirFile]]:
                     mtime=file_path.stat().st_mtime,
                 )
             )
-      sorted(data_list, key=lambda f: f.name)
-      return Result.ok(data_list)
+        data_list.sort(key=lambda f: f.name)
+        return Result.ok(data_list)
     except Exception as e:
-      return Result.fail(f"获取文件列表失败: {e!s}")
+        return Result.fail(f"获取文件列表失败: {e!s}")
 
 
 @router.get(

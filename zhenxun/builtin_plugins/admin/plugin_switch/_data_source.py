@@ -1,10 +1,12 @@
 import os
+from typing import cast
 
 from zhenxun.configs.path_config import DATA_PATH, IMAGE_PATH
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
 from zhenxun.services.cache import Cache
+from zhenxun.utils.common_utils import CommonUtils
 from zhenxun.utils.enum import BlockType, CacheType, PluginType
 from zhenxun.utils.exception import GroupInfoNotFound
 from zhenxun.utils.image_utils import BuildImage, ImageTemplate, RowStyle
@@ -117,9 +119,7 @@ async def build_task(group_id: str | None) -> BuildImage:
     column_name = ["ID", "模块", "名称", "群组状态", "全局状态", "运行时间"]
     group = None
     if group_id:
-        group = await GroupConsole.get_or_none(
-            group_id=group_id, channel_id__isnull=True
-        )
+        group = await GroupConsole.get_group(group_id=group_id)
         if not group:
             raise GroupInfoNotFound()
     else:
@@ -201,20 +201,19 @@ class PluginManage:
             )
             return f"成功将所有功能进群默认状态修改为: {'开启' if status else '关闭'}"
         if group_id:
-            if group := await GroupConsole.get_or_none(
-                group_id=group_id, channel_id__isnull=True
-            ):
-                module_list = await PluginInfo.filter(
-                    plugin_type=PluginType.NORMAL
-                ).values_list("module", flat=True)
+            if group := await GroupConsole.get_group(group_id=group_id):
+                module_list = cast(
+                    list[str],
+                    await PluginInfo.filter(plugin_type=PluginType.NORMAL).values_list(
+                        "module", flat=True
+                    ),
+                )
                 if status:
-                    for module in module_list:
-                        group.block_plugin = group.block_plugin.replace(
-                            f"<{module},", ""
-                        )
+                    # 开启所有功能 - 清空禁用列表
+                    group.block_plugin = ""
                 else:
-                    module_list = [f"<{module}" for module in module_list]
-                    group.block_plugin = ",".join(module_list) + ","  # type: ignore
+                    # 关闭所有功能 - 将模块列表转换为禁用格式
+                    group.block_plugin = CommonUtils.convert_module_format(module_list)
                 await group.save(update_fields=["block_plugin"])
                 return f"成功将此群组所有功能状态修改为: {'开启' if status else '关闭'}"
             return "获取群组失败..."
@@ -235,9 +234,7 @@ class PluginManage:
         返回:
             bool: 是否醒来
         """
-        if c := await GroupConsole.get_or_none(
-            group_id=group_id, channel_id__isnull=True
-        ):
+        if c := await GroupConsole.get_group(group_id=group_id):
             return c.status
         return False
 
@@ -428,17 +425,18 @@ class PluginManage:
         """
         status_str = "关闭" if status else "开启"
         if is_all:
-            modules = await TaskInfo.annotate().values_list("module", flat=True)
-            if modules:
+            module_list = cast(
+                list[str], await TaskInfo.annotate().values_list("module", flat=True)
+            )
+            if module_list:
                 group, _ = await GroupConsole.get_or_create(
                     group_id=group_id, channel_id__isnull=True
                 )
-                modules = [f"<{module}" for module in modules]
                 if status:
-                    group.block_task = ",".join(modules) + ","  # type: ignore
+                    group.block_task = CommonUtils.convert_module_format(module_list)
                 else:
-                    for module in modules:
-                        group.block_task = group.block_task.replace(f"{module},", "")
+                    # 开启所有模块 - 清空禁用列表
+                    group.block_task = ""
                 await group.save(update_fields=["block_task"])
                 return f"已成功{status_str}全部被动技能!"
         elif task := await TaskInfo.get_or_none(name=task_name):
