@@ -1,6 +1,6 @@
 from asyncio import Semaphore
 from collections.abc import Iterable
-from typing import Any, ClassVar, Optional, TypeVar, Generic
+from typing import Any, ClassVar, Generic, TypeVar
 from typing_extensions import Self
 
 import nonebot
@@ -59,19 +59,19 @@ class Model(TortoiseModel, Generic[_TModel]):
 
     @classmethod
     async def create(
-        cls: type[_TModel],
-        using_db: Optional[BaseDBAsyncClient] = None,
+        cls,
+        using_db: BaseDBAsyncClient | None = None,
         **kwargs: Any,
-    ) -> _TModel:
+    ) -> Self:
         return await super().create(using_db=using_db, **kwargs)
 
     @classmethod
     async def get_or_create(
-        cls: type[_TModel],
-        defaults: Optional[dict] = None,
-        using_db: Optional[BaseDBAsyncClient] = None,
+        cls,
+        defaults: dict | None = None,
+        using_db: BaseDBAsyncClient | None = None,
         **kwargs: Any,
-    ) -> tuple[_TModel, bool]:
+    ) -> tuple[Self, bool]:
         result, is_create = await super().get_or_create(
             defaults=defaults, using_db=using_db, **kwargs
         )
@@ -81,11 +81,11 @@ class Model(TortoiseModel, Generic[_TModel]):
 
     @classmethod
     async def update_or_create(
-        cls: type[_TModel],
-        defaults: Optional[dict] = None,
-        using_db: Optional[BaseDBAsyncClient] = None,
+        cls,
+        defaults: dict | None = None,
+        using_db: BaseDBAsyncClient | None = None,
         **kwargs: Any,
-    ) -> tuple[_TModel, bool]:
+    ) -> tuple[Self, bool]:
         result = await super().update_or_create(
             defaults=defaults, using_db=using_db, **kwargs
         )
@@ -95,14 +95,14 @@ class Model(TortoiseModel, Generic[_TModel]):
 
     @classmethod
     async def bulk_create(
-        cls: type[_TModel],
-        objects: Iterable[_TModel],
-        batch_size: Optional[int] = None,
+        cls,
+        objects: Iterable[Self],
+        batch_size: int | None = None,
         ignore_conflicts: bool = False,
-        update_fields: Optional[Iterable[str]] = None,
-        on_conflict: Optional[Iterable[str]] = None,
-        using_db: Optional[BaseDBAsyncClient] = None,
-    ) -> list[_TModel]:
+        update_fields: Iterable[str] | None = None,
+        on_conflict: Iterable[str] | None = None,
+        using_db: BaseDBAsyncClient | None = None,
+    ) -> list[Self]:
         result = await super().bulk_create(
             objects=objects,
             batch_size=batch_size,
@@ -117,11 +117,11 @@ class Model(TortoiseModel, Generic[_TModel]):
 
     @classmethod
     async def bulk_update(
-        cls: type[_TModel],
-        objects: Iterable[_TModel],
+        cls,
+        objects: Iterable[Self],
         fields: Iterable[str],
-        batch_size: Optional[int] = None,
-        using_db: Optional[BaseDBAsyncClient] = None,
+        batch_size: int | None = None,
+        using_db: BaseDBAsyncClient | None = None,
     ) -> int:
         result = await super().bulk_update(
             objects=objects,
@@ -134,9 +134,9 @@ class Model(TortoiseModel, Generic[_TModel]):
         return result
 
     async def save(
-        self: _TModel,
-        using_db: Optional[BaseDBAsyncClient] = None,
-        update_fields: Optional[Iterable[str]] = None,
+        self,
+        using_db: BaseDBAsyncClient | None = None,
+        update_fields: Iterable[str] | None = None,
         force_create: bool = False,
         force_update: bool = False,
     ) -> None:
@@ -163,7 +163,7 @@ class Model(TortoiseModel, Generic[_TModel]):
         if CACHE_FLAG and (cache_type := getattr(self, "cache_type", None)):
             await CacheRoot.reload(cache_type)
 
-    async def delete(self: _TModel, using_db: Optional[BaseDBAsyncClient] = None) -> None:
+    async def delete(self, using_db: BaseDBAsyncClient | None = None) -> None:
         await super().delete(using_db=using_db)
         if CACHE_FLAG and (cache_type := getattr(self, "cache_type", None)):
             await CacheRoot.reload(cache_type)
