@@ -1,3 +1,4 @@
+
 from asyncio import Semaphore
 from collections.abc import Iterable
 from typing import Any, ClassVar
@@ -12,6 +13,8 @@ from tortoise.models import Model as TortoiseModel
 
 from zhenxun.configs.config import BotConfig
 from zhenxun.utils.enum import DbLockType
+from zhenxun.utils.exception import HookPriorityException
+from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 
 from .cache import CacheRoot
 from .log import logger
@@ -29,7 +32,6 @@ def _():
     global CACHE_FLAG
     CACHE_FLAG = True
 
-
 class Model(TortoiseModel):
     """
     自动添加模块
@@ -38,7 +40,8 @@ class Model(TortoiseModel):
     sem_data: ClassVar[dict[str, dict[str, Semaphore]]] = {}
 
     def __init_subclass__(cls, **kwargs):
-        MODELS.append(cls.__module__)
+        if cls.__module__ not in MODELS:
+            MODELS.append(cls.__module__)
 
         if func := getattr(cls, "_run_script", None):
             SCRIPT_METHOD.append((cls.__module__, func))
@@ -165,7 +168,7 @@ class Model(TortoiseModel):
             await CacheRoot.reload(cache_type)
 
 
-class DbUrlMissing(Exception):
+class DbUrlIsNode(HookPriorityException):
     """
     数据库链接地址为空
     """
@@ -181,9 +184,19 @@ class DbConnectError(Exception):
     pass
 
 
+@PriorityLifecycle.on_startup(priority=1)
 async def init():
     if not BotConfig.db_url:
-        raise DbUrlMissing("数据库配置为空，请在.env.dev中配置DB_URL...")
+        # raise DbUrlIsNode("数据库配置为空，请在.env.dev中配置DB_URL...")
+        error = f"""
+**********************************************************************
+🌟 **************************** 配置为空 ************************* 🌟
+🚀 请打开 WebUi 进行基础配置 🚀
+🌐 配置地址：http://{driver.config.host}:{driver.config.port}/#/configure 🌐
+***********************************************************************
+***********************************************************************
+        """
+        raise DbUrlIsNode("\n" + error.strip())
     try:
         await Tortoise.init(
             db_url=BotConfig.db_url,
