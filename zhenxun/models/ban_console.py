@@ -54,12 +54,12 @@ class BanConsole(Model):
             raise UserAndGroupIsNone()
         if user_id:
             return (
-                await cls.get_or_none(user_id=user_id, group_id=group_id)
+                await cls.safe_get_or_none(user_id=user_id, group_id=group_id)
                 if group_id
-                else await cls.get_or_none(user_id=user_id, group_id__isnull=True)
+                else await cls.safe_get_or_none(user_id=user_id, group_id__isnull=True)
             )
         else:
-            return await cls.get_or_none(user_id="", group_id=group_id)
+            return await cls.safe_get_or_none(user_id="", group_id=group_id)
 
     @classmethod
     async def check_ban_level(
@@ -175,3 +175,25 @@ class BanConsole(Model):
             await user.delete()
             return True
         return False
+
+    @classmethod
+    async def get_ban(
+        cls,
+        *,
+        id: int | None = None,
+        user_id: str | None = None,
+        group_id: str | None = None,
+    ) -> Self | None:
+        """安全地获取ban记录
+
+        参数:
+            id: 记录id
+            user_id: 用户id
+            group_id: 群组id
+
+        返回:
+            Self | None: ban记录
+        """
+        if id is not None:
+            return await cls.safe_get_or_none(id=id)
+        return await cls._get_data(user_id, group_id)

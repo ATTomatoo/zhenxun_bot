@@ -42,7 +42,7 @@ def convert_module_format(data: str | list[str]) -> str | list[str]:
         str | list[str]: 根据输入类型返回转换后的数据。
     """
     if isinstance(data, str):
-        return [item.strip(",") for item in data.split("<") if item]
+        return [item.strip(",") for item in data.split("<") if item.strip()]
     else:
         return "".join(add_disable_marker(item) for item in data)
 
@@ -218,20 +218,32 @@ class GroupConsole(Model):
 
     @classmethod
     async def get_group(
-        cls, group_id: str, channel_id: str | None = None
+        cls,
+        group_id: str,
+        channel_id: str | None = None,
+        clean_duplicates: bool = True,
     ) -> Self | None:
         """获取群组
 
         参数:
             group_id: 群组id
-            channel_id: 频道id.
+            channel_id: 频道id
+            clean_duplicates: 是否删除重复的记录，仅保留最新的
 
         返回:
             Self: GroupConsole
         """
         if channel_id:
-            return await cls.get_or_none(group_id=group_id, channel_id=channel_id)
-        return await cls.get_or_none(group_id=group_id, channel_id__isnull=True)
+            return await cls.safe_get_or_none(
+                group_id=group_id,
+                channel_id=channel_id,
+                clean_duplicates=clean_duplicates,
+            )
+        return await cls.safe_get_or_none(
+            group_id=group_id,
+            channel_id__isnull=True,
+            clean_duplicates=clean_duplicates,
+        )
 
     @classmethod
     async def is_super_group(cls, group_id: str) -> bool:
