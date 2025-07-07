@@ -297,14 +297,14 @@ async def init():
                     if sql:
                         sql_list += sql
                 except Exception as e:
-                    logger.debug(f"{module} 执行SCRIPT_METHOD方法出错...", e=e)
+                    logger.trace(f"{module} 执行SCRIPT_METHOD方法出错...", e=e)
             for sql in sql_list:
-                logger.debug(f"执行SQL: {sql}")
+                logger.trace(f"执行SQL: {sql}")
                 try:
                     await db.execute_query_dict(sql)
                     # await TestSQL.raw(sql)
                 except Exception as e:
-                    logger.debug(f"执行SQL: {sql} 错误...", e=e)
+                    logger.trace(f"执行SQL: {sql} 错误...", e=e)
             if sql_list:
                 logger.debug("SCRIPT_METHOD方法执行完毕!")
         await Tortoise.generate_schemas()
