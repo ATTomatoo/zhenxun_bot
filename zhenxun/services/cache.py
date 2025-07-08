@@ -26,6 +26,8 @@ driver = nonebot.get_driver()
 
 
 class Config(BaseModel):
+    enable_cache: bool = True
+    """是否开启缓存功能"""
     redis_host: str | None = None
     """redis地址"""
     redis_port: int | None = None
