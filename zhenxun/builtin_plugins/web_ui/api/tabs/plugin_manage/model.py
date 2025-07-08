@@ -164,6 +164,7 @@ class BatchUpdateResult(BaseModel):
     """错误信息列表"""
 
 
+
 class InstallDependenciesPayload(BaseModel):
     """
     安装依赖
@@ -174,3 +175,4 @@ class InstallDependenciesPayload(BaseModel):
 
     dependencies: list[str] = Field(..., description="依赖列表")
     """依赖列表"""
+

@@ -1,3 +1,4 @@
+
 from asyncio import Semaphore
 from collections.abc import Iterable
 from typing import Any, ClassVar, Generic, TypeVar
@@ -32,7 +33,15 @@ def _():
     CACHE_FLAG = True
 
 
+
+driver = nonebot.get_driver()
+
+
+class Model(Model_):
+    """
+    自动添加模块
 _TModel = TypeVar("_TModel", bound="Model")
+
 
 
 class Model(TortoiseModel, Generic[_TModel]):
@@ -170,6 +179,12 @@ class Model(TortoiseModel, Generic[_TModel]):
 
 
 class DbUrlIsNode(HookPriorityException):
+    """
+    数据库链接地址为空
+    """
+
+
+class DbUrlIsNode(HookPriorityException):
     pass
 
 
@@ -180,6 +195,9 @@ class DbConnectError(Exception):
 @PriorityLifecycle.on_startup(priority=1)
 async def init():
     if not BotConfig.db_url:
+
+        # raise DbUrlIsNode("数据库配置为空，请在.env.dev中配置DB_URL...")
+
         error = f"""
 **********************************************************************
 🌟 **************************** 配置为空 ************************* 🌟

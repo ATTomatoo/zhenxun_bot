@@ -18,6 +18,7 @@ class BotSentType(StrEnum):
     PRIVATE = "PRIVATE"
 
 
+
 class EventLogType(StrEnum):
     GROUP_MEMBER_INCREASE = "GROUP_MEMBER_INCREASE"
     """群成员增加"""
@@ -35,7 +36,6 @@ class CacheType(StrEnum):
     """
     缓存类型
     """
-
     PLUGINS = "GLOBAL_ALL_PLUGINS"
     """全局全部插件"""
     GROUPS = "GLOBAL_ALL_GROUPS"
@@ -51,6 +51,7 @@ class CacheType(StrEnum):
     LIMIT = "GLOBAL_LIMIT"
     """插件限制"""
 
+
 class BankHandleType(StrEnum):
     DEPOSIT = "DEPOSIT"
     """存款"""
@@ -64,13 +65,23 @@ class BankHandleType(StrEnum):
     """利息"""
 
 
+class EventLogType(StrEnum):
+    GROUP_MEMBER_INCREASE = "GROUP_MEMBER_INCREASE"
+    """群成员增加"""
+    GROUP_MEMBER_DECREASE = "GROUP_MEMBER_DECREASE"
+    """群成员减少"""
+    KICK_MEMBER = "KICK_MEMBER"
+    """踢出群成员"""
+    KICK_BOT = "KICK_BOT"
+    """踢出Bot"""
+    LEAVE_MEMBER = "LEAVE_MEMBER"
+    """主动退群"""
 
 
 class DbLockType(StrEnum):
     """
     锁类型
     """
-
     CREATE = "CREATE"
     """创建"""
     DELETE = "DELETE"
