@@ -11,6 +11,7 @@ async def auth_cost(user: UserConsole, plugin: PluginInfo, session: Uninfo) -> i
     """检测是否满足金币条件
 
     参数:
+        user: UserConsole
         plugin: PluginInfo
         session: Uninfo
 

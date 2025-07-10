@@ -33,6 +33,8 @@ class BanConsole(Model):
 
     cache_type = CacheType.BAN
     """缓存类型"""
+    cache_key_field = ("user_id", "group_id")
+    """缓存键字段"""
     enable_lock: ClassVar[list[DbLockType]] = [DbLockType.CREATE]
     """开启锁"""
 

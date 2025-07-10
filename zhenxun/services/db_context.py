@@ -16,20 +16,13 @@ from zhenxun.utils.exception import HookPriorityException
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 
 from .cache import CacheRoot
+from .cache.config import COMPOSITE_KEY_SEPARATOR
 from .log import logger
 
 SCRIPT_METHOD = []
 MODELS: list[str] = []
 
 driver = nonebot.get_driver()
-
-CACHE_FLAG = False
-
-
-@driver.on_bot_connect
-def _():
-    global CACHE_FLAG
-    CACHE_FLAG = True
 
 
 class Model(TortoiseModel):
@@ -56,8 +49,55 @@ class Model(TortoiseModel):
         return cls.sem_data.get(cls.__module__, {}).get(lock_type, None)
 
     @classmethod
-    def get_cache_type(cls):
-        return getattr(cls, "cache_type", None) if CACHE_FLAG else None
+    def get_cache_type(cls) -> str | None:
+        return getattr(cls, "cache_type", None)
+
+    @classmethod
+    def get_cache_key_field(cls) -> str | tuple[str]:
+        """获取缓存键字段名
+
+        返回:
+            str | tuple[str]: 缓存键字段名，可能是单个字段名或字段名元组
+        """
+        if hasattr(cls, "cache_key_field"):
+            return getattr(cls, "cache_key_field", "id")
+        return "id"
+
+    @classmethod
+    def get_cache_key(cls, instance) -> str | None:
+        """获取缓存键
+
+        参数:
+            instance: 模型实例
+
+        返回:
+            str | None
+        """
+        key_field = cls.get_cache_key_field()
+
+        # 如果是元组，表示多个字段组成键
+        if isinstance(key_field, tuple):
+            # 构建键参数列表
+            key_parts = []
+            for field in key_field:
+                if hasattr(instance, field):
+                    value = getattr(instance, field, None)
+                    key_parts.append(value if value is not None else "")
+                else:
+                    # 如果缺少任何必要的字段，返回None
+                    return None
+
+            # 如果没有有效参数，返回None
+            if not key_parts:
+                return None
+
+            return COMPOSITE_KEY_SEPARATOR.join(str(param) for param in key_parts)
+
+        # 单个字段作为键
+        elif hasattr(instance, key_field):
+            return getattr(instance, key_field, None)
+
+        return None
 
     @classmethod
     async def create(
@@ -79,7 +119,11 @@ class Model(TortoiseModel):
                     defaults=defaults, using_db=using_db, **kwargs
                 )
                 if is_create and (cache_type := cls.get_cache_type()):
-                    await CacheRoot.reload(cache_type)
+                    # 获取缓存键
+                    key = cls.get_cache_key(result)
+                    await CacheRoot.invalidate_cache(
+                        cache_type, key if key is not None else None
+                    )
                 return (result, is_create)
         else:
             # 如果没有锁，则执行原来的逻辑
@@ -87,7 +131,11 @@ class Model(TortoiseModel):
                 defaults=defaults, using_db=using_db, **kwargs
             )
             if is_create and (cache_type := cls.get_cache_type()):
-                await CacheRoot.reload(cache_type)
+                # 获取缓存键
+                key = cls.get_cache_key(result)
+                await CacheRoot.invalidate_cache(
+                    cache_type, key if key is not None else None
+                )
             return (result, is_create)
 
     @classmethod
@@ -104,7 +152,11 @@ class Model(TortoiseModel):
                     defaults=defaults, using_db=using_db, **kwargs
                 )
                 if cache_type := cls.get_cache_type():
-                    await CacheRoot.reload(cache_type)
+                    # 获取缓存键
+                    key = cls.get_cache_key(result[0])
+                    await CacheRoot.invalidate_cache(
+                        cache_type, key if key is not None else None
+                    )
                 return result
         else:
             # 如果没有锁，则执行原来的逻辑
@@ -112,19 +164,23 @@ class Model(TortoiseModel):
                 defaults=defaults, using_db=using_db, **kwargs
             )
             if cache_type := cls.get_cache_type():
-                await CacheRoot.reload(cache_type)
+                # 获取缓存键
+                key = cls.get_cache_key(result[0])
+                await CacheRoot.invalidate_cache(
+                    cache_type, key if key is not None else None
+                )
             return result
 
     @classmethod
     async def bulk_create(  # type: ignore
         cls,
-        objects: Iterable[Self],
+        objects: Iterable[Self],  # type: ignore
         batch_size: int | None = None,
         ignore_conflicts: bool = False,
         update_fields: Iterable[str] | None = None,
         on_conflict: Iterable[str] | None = None,
         using_db: BaseDBAsyncClient | None = None,
-    ) -> list[Self]:
+    ) -> list[Self]:  # type: ignore
         result = await super().bulk_create(
             objects=objects,
             batch_size=batch_size,
@@ -134,17 +190,18 @@ class Model(TortoiseModel):
             using_db=using_db,
         )
         if cache_type := cls.get_cache_type():
-            await CacheRoot.reload(cache_type)
+            # 批量创建时清除整个类型的缓存
+            await CacheRoot.invalidate_cache(cache_type)
         return result
 
     @classmethod
     async def bulk_update(  # type: ignore
         cls,
-        objects: Iterable[Self],
+        objects: Iterable[Self],  # type: ignore
         fields: Iterable[str],
         batch_size: int | None = None,
         using_db: BaseDBAsyncClient | None = None,
-    ) -> int:
+    ) -> int:  # type: ignore
         result = await super().bulk_update(
             objects=objects,
             fields=fields,
@@ -152,7 +209,8 @@ class Model(TortoiseModel):
             using_db=using_db,
         )
         if cache_type := cls.get_cache_type():
-            await CacheRoot.reload(cache_type)
+            # 批量更新时清除整个类型的缓存
+            await CacheRoot.invalidate_cache(cache_type)
         return result
 
     async def save(
@@ -181,13 +239,24 @@ class Model(TortoiseModel):
                 force_create=force_create,
                 force_update=force_update,
             )
-        if CACHE_FLAG and (cache_type := getattr(self, "cache_type", None)):
-            await CacheRoot.reload(cache_type)
+        if cache_type := getattr(self, "cache_type", None):
+            # 获取缓存键
+            key = self.__class__.get_cache_key(self)
+            await CacheRoot.invalidate_cache(cache_type, key)
 
     async def delete(self, using_db: BaseDBAsyncClient | None = None):
+        # 在删除前获取缓存键
+        cache_type = getattr(self, "cache_type", None)
+        key = None
+        if cache_type:
+            key = self.__class__.get_cache_key(self)
+
+        # 执行删除操作
         await super().delete(using_db=using_db)
-        if CACHE_FLAG and (cache_type := getattr(self, "cache_type", None)):
-            await CacheRoot.reload(cache_type)
+
+        # 清除缓存
+        if cache_type:
+            await CacheRoot.invalidate_cache(cache_type, key)
 
     @classmethod
     async def safe_get_or_none(

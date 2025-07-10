@@ -90,6 +90,8 @@ class GroupConsole(Model):
 
     cache_type = CacheType.GROUPS
     """缓存类型"""
+    cache_key_field = ("group_id", "channel_id")
+    """缓存键字段"""
     enable_lock: ClassVar[list[DbLockType]] = [DbLockType.CREATE]
     """开启锁"""
 
@@ -123,7 +125,18 @@ class GroupConsole(Model):
         )
 
     @classmethod
-    @CacheRoot.listener(CacheType.GROUPS)
+    async def _update_cache(cls, instance):
+        """更新缓存
+
+        参数:
+            instance: 需要更新缓存的实例
+        """
+        if cache_type := cls.get_cache_type():
+            key = cls.get_cache_key(instance)
+            if key is not None:
+                await CacheRoot.invalidate_cache(cache_type, key)
+
+    @classmethod
     async def create(
         cls, using_db: BaseDBAsyncClient | None = None, **kwargs: Any
     ) -> Self:
@@ -135,6 +148,9 @@ class GroupConsole(Model):
 
         if task_modules or plugin_modules:
             await cls._update_modules(group, task_modules, plugin_modules, using_db)
+
+        # 更新缓存
+        await cls._update_cache(group)
 
         return group
 
@@ -187,14 +203,13 @@ class GroupConsole(Model):
         if task_modules or plugin_modules:
             await cls._update_modules(group, task_modules, plugin_modules, using_db)
 
+        # 更新缓存
         if is_create:
-            if cache := await CacheRoot.get_cache(CacheType.GROUPS):
-                await cache.update(group.group_id, group)
+            await cls._update_cache(group)
 
         return group, is_create
 
     @classmethod
-    @CacheRoot.listener(CacheType.GROUPS)
     async def update_or_create(
         cls,
         defaults: dict | None = None,
@@ -213,6 +228,9 @@ class GroupConsole(Model):
 
         if task_modules or plugin_modules:
             await cls._update_modules(group, task_modules, plugin_modules, using_db)
+
+        # 更新缓存
+        await cls._update_cache(group)
 
         return group, is_create
 
@@ -327,6 +345,9 @@ class GroupConsole(Model):
         if update_fields:
             await group.save(update_fields=update_fields)
 
+        # 更新缓存
+        await cls._update_cache(group)
+
     @classmethod
     async def set_unblock_plugin(
         cls,
@@ -362,6 +383,9 @@ class GroupConsole(Model):
             update_fields.append("block_plugin")
         if update_fields:
             await group.save(update_fields=update_fields)
+
+        # 更新缓存
+        await cls._update_cache(group)
 
     @classmethod
     async def is_normal_block_plugin(
@@ -466,6 +490,9 @@ class GroupConsole(Model):
         if update_fields:
             await group.save(update_fields=update_fields)
 
+        # 更新缓存
+        await cls._update_cache(group)
+
     @classmethod
     async def set_unblock_task(
         cls,
@@ -499,6 +526,9 @@ class GroupConsole(Model):
             update_fields.append("block_task")
         if update_fields:
             await group.save(update_fields=update_fields)
+
+        # 更新缓存
+        await cls._update_cache(group)
 
     @classmethod
     def _run_script(cls):

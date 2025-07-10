@@ -1,20 +1,15 @@
-import asyncio
-
 from nonebot.adapters import Bot
 from nonebot.matcher import Matcher
 from nonebot_plugin_alconna import At
 from nonebot_plugin_uninfo import Uninfo
-from tortoise.exceptions import MultipleObjectsReturned
 
 from zhenxun.configs.config import Config
 from zhenxun.models.ban_console import BanConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.cache import Cache
-from zhenxun.services.log import logger
-from zhenxun.utils.enum import CacheType, PluginType
+from zhenxun.services.data_access import DataAccess
+from zhenxun.utils.enum import PluginType
 from zhenxun.utils.utils import EntityIDs, get_entity_ids
 
-from .config import LOGGER_COMMAND
 from .exception import SkipPluginException
 from .utils import freq, send_message
 
@@ -29,10 +24,18 @@ Config.add_plugin_config(
 async def is_ban(user_id: str | None, group_id: str | None) -> int:
     if not user_id and not group_id:
         return 0
-    cache = Cache[BanConsole](CacheType.BAN)
-    group_user, user = await asyncio.gather(
-        cache.get(user_id, group_id), cache.get(user_id)
-    )
+    ban_dao = DataAccess(BanConsole)
+
+    # 分别获取用户在群组中的ban记录和全局ban记录
+    group_user = None
+    user = None
+
+    if user_id and group_id:
+        group_user = await ban_dao.safe_get_or_none(user_id=user_id, group_id=group_id)
+
+    if user_id:
+        user = await ban_dao.safe_get_or_none(user_id=user_id, group_id="")
+
     results = []
     if group_user:
         results.append(group_user)
@@ -88,76 +91,55 @@ def format_time(time: float) -> str:
     return time_str
 
 
-async def group_handle(cache: Cache[list[BanConsole]], group_id: str):
+async def group_handle(group_id: str):
     """群组ban检查
 
     参数:
-        cache: cache
+        ban_dao: BanConsole数据访问对象
         group_id: 群组id
 
     异常:
         SkipPluginException: 群组处于黑名单
     """
-    try:
-        if await is_ban(None, group_id):
-            raise SkipPluginException("群组处于黑名单中...")
-    except MultipleObjectsReturned:
-        logger.warning(
-            "群组黑名单数据重复，过滤该次hook并移除多余数据...", LOGGER_COMMAND
-        )
-        ids = await BanConsole.filter(user_id="", group_id=group_id).values_list(
-            "id", flat=True
-        )
-        await BanConsole.filter(id__in=ids[:-1]).delete()
-        await cache.reload()
+    if await is_ban(None, group_id):
+        raise SkipPluginException("群组处于黑名单中...")
 
 
-async def user_handle(
-    module: str, cache: Cache[list[BanConsole]], entity: EntityIDs, session: Uninfo
-):
+async def user_handle(module: str, entity: EntityIDs, session: Uninfo):
     """用户ban检查
 
     参数:
         module: 插件模块名
-        cache: cache
-        user_id: 用户id
+        ban_dao: BanConsole数据访问对象
+        entity: 实体ID信息
         session: Uninfo
 
     异常:
         SkipPluginException: 用户处于黑名单
     """
     ban_result = Config.get_config("hook", "BAN_RESULT")
-    try:
-        time = await is_ban(entity.user_id, entity.group_id)
-        if not time:
-            return
-        time_str = format_time(time)
-        db_plugin = await Cache[PluginInfo](CacheType.PLUGINS).get(module)
-        if (
-            db_plugin
-            # and not db_plugin.ignore_prompt
-            and time != -1
-            and ban_result
-            and freq.is_send_limit_message(db_plugin, entity.user_id, False)
-        ):
-            await send_message(
-                session,
-                [
-                    At(flag="user", target=entity.user_id),
-                    f"{ban_result}\n在..在 {time_str} 后才会理你喔",
-                ],
-                entity.user_id,
-            )
-        raise SkipPluginException("用户处于黑名单中...")
-    except MultipleObjectsReturned:
-        logger.warning(
-            "用户黑名单数据重复，过滤该次hook并移除多余数据...", LOGGER_COMMAND
+    time = await is_ban(entity.user_id, entity.group_id)
+    if not time:
+        return
+    time_str = format_time(time)
+    plugin_dao = DataAccess(PluginInfo)
+    db_plugin = await plugin_dao.safe_get_or_none(module=module)
+    if (
+        db_plugin
+        and not db_plugin.ignore_prompt
+        and time != -1
+        and ban_result
+        and freq.is_send_limit_message(db_plugin, entity.user_id, False)
+    ):
+        await send_message(
+            session,
+            [
+                At(flag="user", target=entity.user_id),
+                f"{ban_result}\n在..在 {time_str} 后才会理你喔",
+            ],
+            entity.user_id,
         )
-        ids = await BanConsole.filter(user_id=entity.user_id, group_id="").values_list(
-            "id", flat=True
-        )
-        await BanConsole.filter(id__in=ids[:-1]).delete()
-        await cache.reload()
+    raise SkipPluginException("用户处于黑名单中...")
 
 
 async def auth_ban(matcher: Matcher, bot: Bot, session: Uninfo):
@@ -168,8 +150,7 @@ async def auth_ban(matcher: Matcher, bot: Bot, session: Uninfo):
     entity = get_entity_ids(session)
     if entity.user_id in bot.config.superusers:
         return
-    cache = Cache[list[BanConsole]](CacheType.BAN)
     if entity.group_id:
-        await group_handle(cache, entity.group_id)
+        await group_handle(entity.group_id)
     if entity.user_id:
-        await user_handle(matcher.plugin_name, cache, entity, session)
+        await user_handle(matcher.plugin_name, entity, session)

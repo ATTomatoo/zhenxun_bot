@@ -60,6 +60,9 @@ class PluginInfo(Model):
         table_description = "插件基本信息"
 
     cache_type = CacheType.PLUGINS
+    """缓存类型"""
+    cache_key_field = "module"
+    """缓存键字段"""
 
     @classmethod
     async def get_plugin(

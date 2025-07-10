@@ -9,13 +9,9 @@ from tortoise.exceptions import IntegrityError
 
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
-from zhenxun.services.cache import Cache
+from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
-from zhenxun.utils.enum import (
-    CacheType,
-    GoldHandle,
-    PluginType,
-)
+from zhenxun.utils.enum import GoldHandle, PluginType
 from zhenxun.utils.exception import InsufficientGold
 from zhenxun.utils.platform import PlatformUtils
 from zhenxun.utils.utils import get_entity_ids
@@ -54,8 +50,9 @@ async def get_plugin_and_user(
     返回:
         tuple[PluginInfo, UserConsole]: 插件信息，用户信息
     """
-    user_cache = Cache[UserConsole](CacheType.USERS)
-    plugin = await Cache[PluginInfo](CacheType.PLUGINS).get(module)
+    user_dao = DataAccess(UserConsole)
+    plugin_dao = DataAccess(PluginInfo)
+    plugin = await plugin_dao.safe_get_or_none(module=module)
     if not plugin:
         raise PermissionExemption(f"插件:{module} 数据不存在，已跳过权限检查...")
     if plugin.plugin_type == PluginType.HIDDEN:
@@ -64,7 +61,7 @@ async def get_plugin_and_user(
         )
     user = None
     try:
-        user = await user_cache.get(user_id)
+        user = await user_dao.safe_get_or_none(user_id=user_id)
     except IntegrityError as e:
         raise PermissionExemption("重复创建用户，已跳过该次权限检查...") from e
     if not user:
@@ -108,7 +105,7 @@ async def reduce_gold(user_id: str, module: str, cost_gold: int, session: Uninfo
         cost_gold: 消耗金币
         session: Uninfo
     """
-    user_cache = Cache[UserConsole](CacheType.USERS)
+    user_dao = DataAccess(UserConsole)
     try:
         await UserConsole.reduce_gold(
             user_id,
@@ -121,8 +118,8 @@ async def reduce_gold(user_id: str, module: str, cost_gold: int, session: Uninfo
         if u := await UserConsole.get_user(user_id):
             u.gold = 0
             await u.save(update_fields=["gold"])
-    # 更新缓存
-    await user_cache.update(user_id)
+    # 清除缓存，使下次查询时从数据库获取最新数据
+    await user_dao.clear_cache(user_id=user_id)
     logger.debug(f"调用功能花费金币: {cost_gold}", LOGGER_COMMAND, session=session)
 
 

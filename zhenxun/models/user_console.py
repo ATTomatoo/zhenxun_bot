@@ -31,6 +31,9 @@ class UserConsole(Model):
         table_description = "用户数据表"
 
     cache_type = CacheType.USERS
+    """缓存类型"""
+    cache_key_field = "user_id"
+    """缓存键字段"""
 
     @classmethod
     async def get_user(cls, user_id: str, platform: str | None = None) -> "UserConsole":

@@ -3,9 +3,9 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.cache import Cache
+from zhenxun.services.data_access import DataAccess
 from zhenxun.utils.common_utils import CommonUtils
-from zhenxun.utils.enum import BlockType, CacheType
+from zhenxun.utils.enum import BlockType
 from zhenxun.utils.utils import get_entity_ids
 
 from .exception import IsSuperuserException, SkipPluginException
@@ -20,10 +20,12 @@ class GroupCheck:
         self.session = session
         self.is_poke = is_poke
         self.plugin = plugin
+        self.group_dao = DataAccess(GroupConsole)
 
     async def __get_data(self):
-        cache = Cache[GroupConsole](CacheType.GROUPS)
-        return await cache.get(self.group_id)
+        return await self.group_dao.safe_get_or_none(
+            group_id=self.group_id, channel_id__isnull=True
+        )
 
     async def check(self):
         await self.check_superuser_block(self.plugin)
@@ -89,6 +91,7 @@ class PluginCheck:
         self.session = session
         self.is_poke = is_poke
         self.group_id = group_id
+        self.group_dao = DataAccess(GroupConsole)
 
     async def check_user(self, plugin: PluginInfo):
         """全局私聊禁用检测
@@ -118,9 +121,11 @@ class PluginCheck:
         if plugin.status or plugin.block_type != BlockType.ALL:
             return
         """全局状态"""
-        cache = Cache[GroupConsole](CacheType.GROUPS)
-        if self.group_id and (group := await cache.get(self.group_id)):
-            if group.is_super:
+        if self.group_id:
+            group = await self.group_dao.safe_get_or_none(
+                group_id=self.group_id, channel_id__isnull=True
+            )
+            if group and group.is_super:
                 raise IsSuperuserException()
         sid = self.group_id or self.session.user.id
         if freq.is_send_limit_message(plugin, sid, self.is_poke):

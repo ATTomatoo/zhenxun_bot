@@ -22,6 +22,9 @@ class LevelUser(Model):
         unique_together = ("user_id", "group_id")
 
     cache_type = CacheType.LEVEL
+    """缓存类型"""
+    cache_key_field = ("user_id", "group_id")
+    """缓存键字段"""
 
     @classmethod
     async def get_user_level(cls, user_id: str, group_id: str | None) -> int:

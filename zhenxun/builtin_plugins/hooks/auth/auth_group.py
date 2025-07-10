@@ -2,8 +2,7 @@ from nonebot_plugin_alconna import UniMsg
 
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.cache import Cache
-from zhenxun.utils.enum import CacheType
+from zhenxun.services.data_access import DataAccess
 from zhenxun.utils.utils import EntityIDs
 
 from .config import SwitchEnum
@@ -21,7 +20,10 @@ async def auth_group(plugin: PluginInfo, entity: EntityIDs, message: UniMsg):
     if not entity.group_id:
         return
     text = message.extract_plain_text()
-    group = await Cache[GroupConsole](CacheType.GROUPS).get(entity.group_id)
+    group_dao = DataAccess(GroupConsole)
+    group = await group_dao.safe_get_or_none(
+        group_id=entity.group_id, channel_id__isnull=True
+    )
     if not group:
         raise SkipPluginException("群组信息不存在...")
     if group.level < 0:
