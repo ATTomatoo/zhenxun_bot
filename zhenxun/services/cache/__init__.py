@@ -262,6 +262,8 @@ class CacheManager:
     _cache_backend: BaseCache | AioCache | None = None
     _registry: ClassVar[dict[str, CacheModel]] = {}
     _data: ClassVar[dict[str, CacheData]] = {}
+    _list_caches: ClassVar[dict[str, "CacheList"]] = {}
+    _dict_caches: ClassVar[dict[str, "CacheDict"]] = {}
     _enabled = False  # 缓存启用标记
 
     def __new__(cls) -> "CacheManager":
@@ -289,6 +291,18 @@ class CacheManager:
         """禁用缓存"""
         self.__class__._enabled = False
         logger.info("缓存功能已禁用", LOG_COMMAND)
+
+    def cache_dict(self, cache_type: str, expire: int = 0) -> CacheDict:
+        """获取缓存字典"""
+        if cache_type not in self._dict_caches:
+            self._dict_caches[cache_type] = CacheDict(cache_type, expire)
+        return self._dict_caches[cache_type]
+
+    def cache_list(self, cache_type: str, expire: int = 0) -> CacheList:
+        """获取缓存列表"""
+        if cache_type not in self._list_caches:
+            self._list_caches[cache_type] = CacheList(cache_type, expire)
+        return self._list_caches[cache_type]
 
     def listener(self, cache_type: str):
         """缓存监听器装饰器
