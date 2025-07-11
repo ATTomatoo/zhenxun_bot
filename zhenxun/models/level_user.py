@@ -99,6 +99,8 @@ class LevelUser(Model):
         返回:
             bool: 是否大于level
         """
+        if level == 0:
+            return True
         if group_id:
             if user := await cls.get_or_none(user_id=user_id, group_id=group_id):
                 return user.user_level >= level
