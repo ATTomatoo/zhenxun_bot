@@ -5,7 +5,7 @@ from zhenxun.configs.path_config import DATA_PATH, IMAGE_PATH
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
-from zhenxun.services.cache import Cache
+from zhenxun.services.cache import CacheRoot
 from zhenxun.utils.common_utils import CommonUtils
 from zhenxun.utils.enum import BlockType, CacheType, PluginType
 from zhenxun.utils.exception import GroupInfoNotFound
@@ -220,8 +220,7 @@ class PluginManager:
         await PluginInfo.filter(plugin_type=PluginType.NORMAL).update(
             status=status, block_type=None if status else BlockType.ALL
         )
-        cache = Cache[PluginInfo](CacheType.PLUGINS)
-        await cache.reload()
+        await CacheRoot.invalidate_cache(CacheType.PLUGINS)
         return f"成功将所有功能全局状态修改为: {'开启' if status else '关闭'}"
 
     @classmethod
