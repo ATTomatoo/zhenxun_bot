@@ -294,7 +294,7 @@ class Model(TortoiseModel):
                     return None
 
                 # 如果需要清理重复记录
-                if clean_duplicates and hasattr(cls, "id"):
+                if clean_duplicates and hasattr(records[0], "id"):
                     # 按 id 排序
                     records = sorted(
                         records, key=lambda x: getattr(x, "id", 0), reverse=True
