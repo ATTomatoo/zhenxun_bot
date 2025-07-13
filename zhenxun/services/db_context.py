@@ -1,67 +1,83 @@
-from asyncio import Semaphore
+import asyncio
 from collections.abc import Iterable
+import contextlib
+import time
 from typing import Any, ClassVar
 from typing_extensions import Self
+from urllib.parse import urlparse
 
-import nonebot
+from nonebot import get_driver
 from nonebot.utils import is_coroutine_callable
 from tortoise import Tortoise
 from tortoise.backends.base.client import BaseDBAsyncClient
 from tortoise.connection import connections
+from tortoise.exceptions import IntegrityError, MultipleObjectsReturned
 from tortoise.models import Model as TortoiseModel
+from tortoise.transactions import in_transaction
 
 from zhenxun.configs.config import BotConfig
+from zhenxun.services.cache import CacheRoot
+from zhenxun.services.log import logger
 from zhenxun.utils.enum import DbLockType
 from zhenxun.utils.exception import HookPriorityException
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 
-from .cache import CacheRoot
-from .cache.config import COMPOSITE_KEY_SEPARATOR
-from .log import logger
+driver = get_driver()
 
 SCRIPT_METHOD = []
 MODELS: list[str] = []
 
-driver = nonebot.get_driver()
+# 数据库操作超时设置（秒）
+DB_TIMEOUT_SECONDS = 3.0
+
+# 性能监控阈值（秒）
+SLOW_QUERY_THRESHOLD = 0.5
+
+LOG_COMMAND = "DbContext"
+
+
+async def with_db_timeout(
+    coro, timeout: float = DB_TIMEOUT_SECONDS, operation: str | None = None
+):
+    """带超时控制的数据库操作"""
+    start_time = time.time()
+    try:
+        result = await asyncio.wait_for(coro, timeout=timeout)
+        elapsed = time.time() - start_time
+        if elapsed > SLOW_QUERY_THRESHOLD and operation:
+            logger.warning(f"慢查询: {operation} 耗时 {elapsed:.3f}s", LOG_COMMAND)
+        return result
+    except asyncio.TimeoutError:
+        if operation:
+            logger.error(f"数据库操作超时: {operation} (>{timeout}s)", LOG_COMMAND)
+        raise
 
 
 class Model(TortoiseModel):
     """
-    自动添加模块
+    增强的ORM基类，解决锁嵌套问题
     """
 
-    sem_data: ClassVar[dict[str, dict[str, Semaphore]]] = {}
+    sem_data: ClassVar[dict[str, dict[str, asyncio.Semaphore]]] = {}
+    _current_locks: ClassVar[dict[int, DbLockType]] = {}  # 跟踪当前协程持有的锁
 
     def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
         if cls.__module__ not in MODELS:
             MODELS.append(cls.__module__)
 
         if func := getattr(cls, "_run_script", None):
             SCRIPT_METHOD.append((cls.__module__, func))
-        if enable_lock := getattr(cls, "enable_lock", []):
-            """创建锁"""
-            cls.sem_data[cls.__module__] = {}
-            for lock in enable_lock:
-                cls.sem_data[cls.__module__][lock] = Semaphore(1)
-
-    @classmethod
-    def get_semaphore(cls, lock_type: DbLockType):
-        return cls.sem_data.get(cls.__module__, {}).get(lock_type, None)
 
     @classmethod
     def get_cache_type(cls) -> str | None:
+        """获取缓存类型"""
         return getattr(cls, "cache_type", None)
 
     @classmethod
     def get_cache_key_field(cls) -> str | tuple[str]:
-        """获取缓存键字段名
-
-        返回:
-            str | tuple[str]: 缓存键字段名，可能是单个字段名或字段名元组
-        """
-        if hasattr(cls, "cache_key_field"):
-            return getattr(cls, "cache_key_field", "id")
-        return "id"
+        """获取缓存键字段"""
+        return getattr(cls, "cache_key_field", "id")
 
     @classmethod
     def get_cache_key(cls, instance) -> str | None:
@@ -71,13 +87,14 @@ class Model(TortoiseModel):
             instance: 模型实例
 
         返回:
-            str | None
+            str | None: 缓存键，如果无法获取则返回None
         """
+        from zhenxun.services.cache.config import COMPOSITE_KEY_SEPARATOR
+
         key_field = cls.get_cache_key_field()
 
-        # 如果是元组，表示多个字段组成键
         if isinstance(key_field, tuple):
-            # 构建键参数列表
+            # 多字段主键
             key_parts = []
             for field in key_field:
                 if hasattr(instance, field):
@@ -85,25 +102,60 @@ class Model(TortoiseModel):
                     key_parts.append(value if value is not None else "")
                 else:
                     # 如果缺少任何必要的字段，返回None
-                    return None
+                    key_parts.append("")
 
             # 如果没有有效参数，返回None
-            if not key_parts:
-                return None
-
-            return COMPOSITE_KEY_SEPARATOR.join(str(param) for param in key_parts)
-
-        # 单个字段作为键
+            return COMPOSITE_KEY_SEPARATOR.join(key_parts) if key_parts else None
         elif hasattr(instance, key_field):
-            return getattr(instance, key_field, None)
+            value = getattr(instance, key_field, None)
+            return str(value) if value is not None else None
 
         return None
+
+    @classmethod
+    def get_semaphore(cls, lock_type: DbLockType):
+        enable_lock = getattr(cls, "enable_lock", None)
+        if not enable_lock or lock_type not in enable_lock:
+            return None
+
+        if cls.__name__ not in cls.sem_data:
+            cls.sem_data[cls.__name__] = {}
+        if lock_type not in cls.sem_data[cls.__name__]:
+            cls.sem_data[cls.__name__][lock_type] = asyncio.Semaphore(1)
+        return cls.sem_data[cls.__name__][lock_type]
+
+    @classmethod
+    def _require_lock(cls, lock_type: DbLockType) -> bool:
+        """检查是否需要真正加锁"""
+        task_id = id(asyncio.current_task())
+        return cls._current_locks.get(task_id) != lock_type
+
+    @classmethod
+    @contextlib.asynccontextmanager
+    async def _lock_context(cls, lock_type: DbLockType):
+        """带重入检查的锁上下文"""
+        task_id = id(asyncio.current_task())
+        need_lock = cls._require_lock(lock_type)
+
+        if need_lock and (sem := cls.get_semaphore(lock_type)):
+            cls._current_locks[task_id] = lock_type
+            async with sem:
+                yield
+            cls._current_locks.pop(task_id, None)
+        else:
+            yield
 
     @classmethod
     async def create(
         cls, using_db: BaseDBAsyncClient | None = None, **kwargs: Any
     ) -> Self:
-        return await super().create(using_db=using_db, **kwargs)
+        """创建数据（使用CREATE锁）"""
+        async with cls._lock_context(DbLockType.CREATE):
+            # 直接调用父类的_create方法避免触发save的锁
+            result = await super().create(using_db=using_db, **kwargs)
+            if cache_type := cls.get_cache_type():
+                await CacheRoot.invalidate_cache(cache_type, cls.get_cache_key(result))
+            return result
 
     @classmethod
     async def get_or_create(
@@ -112,31 +164,13 @@ class Model(TortoiseModel):
         using_db: BaseDBAsyncClient | None = None,
         **kwargs: Any,
     ) -> tuple[Self, bool]:
-        if sem := cls.get_semaphore(DbLockType.CREATE):
-            async with sem:
-                # 在锁内执行查询和创建操作
-                result, is_create = await super().get_or_create(
-                    defaults=defaults, using_db=using_db, **kwargs
-                )
-                if is_create and (cache_type := cls.get_cache_type()):
-                    # 获取缓存键
-                    key = cls.get_cache_key(result)
-                    await CacheRoot.invalidate_cache(
-                        cache_type, key if key is not None else None
-                    )
-                return (result, is_create)
-        else:
-            # 如果没有锁，则执行原来的逻辑
-            result, is_create = await super().get_or_create(
-                defaults=defaults, using_db=using_db, **kwargs
-            )
-            if is_create and (cache_type := cls.get_cache_type()):
-                # 获取缓存键
-                key = cls.get_cache_key(result)
-                await CacheRoot.invalidate_cache(
-                    cache_type, key if key is not None else None
-                )
-            return (result, is_create)
+        """获取或创建数据（无锁版本，依赖数据库约束）"""
+        result = await super().get_or_create(
+            defaults=defaults, using_db=using_db, **kwargs
+        )
+        if cache_type := cls.get_cache_type():
+            await CacheRoot.invalidate_cache(cache_type, cls.get_cache_key(result[0]))
+        return result
 
     @classmethod
     async def update_or_create(
@@ -145,73 +179,28 @@ class Model(TortoiseModel):
         using_db: BaseDBAsyncClient | None = None,
         **kwargs: Any,
     ) -> tuple[Self, bool]:
-        if sem := cls.get_semaphore(DbLockType.CREATE):
-            async with sem:
-                # 在锁内执行查询和创建操作
-                result = await super().update_or_create(
-                    defaults=defaults, using_db=using_db, **kwargs
-                )
+        """更新或创建数据（使用UPSERT锁）"""
+        async with cls._lock_context(DbLockType.UPSERT):
+            try:
+                # 先尝试更新（带行锁）
+                async with in_transaction():
+                    if obj := await cls.filter(**kwargs).select_for_update().first():
+                        await obj.update_from_dict(defaults or {})
+                        await obj.save()
+                        result = (obj, False)
+                    else:
+                        # 创建时不重复加锁
+                        result = await cls.create(**kwargs, **(defaults or {})), True
+
                 if cache_type := cls.get_cache_type():
-                    # 获取缓存键
-                    key = cls.get_cache_key(result[0])
                     await CacheRoot.invalidate_cache(
-                        cache_type, key if key is not None else None
+                        cache_type, cls.get_cache_key(result[0])
                     )
                 return result
-        else:
-            # 如果没有锁，则执行原来的逻辑
-            result = await super().update_or_create(
-                defaults=defaults, using_db=using_db, **kwargs
-            )
-            if cache_type := cls.get_cache_type():
-                # 获取缓存键
-                key = cls.get_cache_key(result[0])
-                await CacheRoot.invalidate_cache(
-                    cache_type, key if key is not None else None
-                )
-            return result
-
-    @classmethod
-    async def bulk_create(  # type: ignore
-        cls,
-        objects: Iterable[Self],  # type: ignore
-        batch_size: int | None = None,
-        ignore_conflicts: bool = False,
-        update_fields: Iterable[str] | None = None,
-        on_conflict: Iterable[str] | None = None,
-        using_db: BaseDBAsyncClient | None = None,
-    ) -> list[Self]:  # type: ignore
-        result = await super().bulk_create(
-            objects=objects,
-            batch_size=batch_size,
-            ignore_conflicts=ignore_conflicts,
-            update_fields=update_fields,
-            on_conflict=on_conflict,
-            using_db=using_db,
-        )
-        if cache_type := cls.get_cache_type():
-            # 批量创建时清除整个类型的缓存
-            await CacheRoot.invalidate_cache(cache_type)
-        return result
-
-    @classmethod
-    async def bulk_update(  # type: ignore
-        cls,
-        objects: Iterable[Self],  # type: ignore
-        fields: Iterable[str],
-        batch_size: int | None = None,
-        using_db: BaseDBAsyncClient | None = None,
-    ) -> int:  # type: ignore
-        result = await super().bulk_update(
-            objects=objects,
-            fields=fields,
-            batch_size=batch_size,
-            using_db=using_db,
-        )
-        if cache_type := cls.get_cache_type():
-            # 批量更新时清除整个类型的缓存
-            await CacheRoot.invalidate_cache(cache_type)
-        return result
+            except IntegrityError:
+                # 处理极端情况下的唯一约束冲突
+                obj = await cls.get(**kwargs)
+                return obj, False
 
     async def save(
         self,
@@ -220,37 +209,27 @@ class Model(TortoiseModel):
         force_create: bool = False,
         force_update: bool = False,
     ):
-        if getattr(self, "id", None) is None:
-            sem = self.get_semaphore(DbLockType.CREATE)
-        else:
-            sem = self.get_semaphore(DbLockType.UPDATE)
-        if sem:
-            async with sem:
-                await super().save(
-                    using_db=using_db,
-                    update_fields=update_fields,
-                    force_create=force_create,
-                    force_update=force_update,
-                )
-        else:
+        """保存数据（根据操作类型自动选择锁）"""
+        lock_type = (
+            DbLockType.CREATE
+            if getattr(self, "id", None) is None
+            else DbLockType.UPDATE
+        )
+        async with self._lock_context(lock_type):
             await super().save(
                 using_db=using_db,
                 update_fields=update_fields,
                 force_create=force_create,
                 force_update=force_update,
             )
-        if cache_type := getattr(self, "cache_type", None):
-            # 获取缓存键
-            key = self.__class__.get_cache_key(self)
-            await CacheRoot.invalidate_cache(cache_type, key)
+            if cache_type := getattr(self, "cache_type", None):
+                await CacheRoot.invalidate_cache(
+                    cache_type, self.__class__.get_cache_key(self)
+                )
 
     async def delete(self, using_db: BaseDBAsyncClient | None = None):
-        # 在删除前获取缓存键
         cache_type = getattr(self, "cache_type", None)
-        key = None
-        if cache_type:
-            key = self.__class__.get_cache_key(self)
-
+        key = self.__class__.get_cache_key(self) if cache_type else None
         # 执行删除操作
         await super().delete(using_db=using_db)
 
@@ -280,15 +259,23 @@ class Model(TortoiseModel):
         """
         try:
             # 先尝试使用 get_or_none 获取单个记录
-            return await cls.get_or_none(*args, using_db=using_db, **kwargs)
-        except Exception as e:
-            # 如果出现错误（可能是存在多个记录）
-            if "Multiple objects" in str(e):
-                logger.warning(
-                    f"{cls.__name__} safe_get_or_none 发现多个记录: {kwargs}"
+            try:
+                return await with_db_timeout(
+                    cls.get_or_none(*args, using_db=using_db, **kwargs),
+                    operation=f"{cls.__name__}.get_or_none",
                 )
+            except MultipleObjectsReturned:
+                # 如果出现多个记录的情况，进行特殊处理
+                logger.warning(
+                    f"{cls.__name__} safe_get_or_none 发现多个记录: {kwargs}",
+                    LOG_COMMAND,
+                )
+
                 # 查询所有匹配记录
-                records = await cls.filter(*args, **kwargs)
+                records = await with_db_timeout(
+                    cls.filter(*args, **kwargs).all(),
+                    operation=f"{cls.__name__}.filter.all",
+                )
 
                 if not records:
                     return None
@@ -301,20 +288,39 @@ class Model(TortoiseModel):
                     )
                     for record in records[1:]:
                         try:
-                            await record.delete()
+                            await with_db_timeout(
+                                record.delete(),
+                                operation=f"{cls.__name__}.delete_duplicate",
+                            )
                             logger.info(
                                 f"{cls.__name__} 删除重复记录:"
-                                f" id={getattr(record, 'id', None)}"
+                                f" id={getattr(record, 'id', None)}",
+                                LOG_COMMAND,
                             )
                         except Exception as del_e:
                             logger.error(f"删除重复记录失败: {del_e}")
                     return records[0]
                 # 如果不需要清理或没有 id 字段，则返回最新的记录
                 if hasattr(cls, "id"):
-                    return await cls.filter(*args, **kwargs).order_by("-id").first()
+                    return await with_db_timeout(
+                        cls.filter(*args, **kwargs).order_by("-id").first(),
+                        operation=f"{cls.__name__}.filter.order_by.first",
+                    )
                 # 如果没有 id 字段，则返回第一个记录
-                return await cls.filter(*args, **kwargs).first()
+                return await with_db_timeout(
+                    cls.filter(*args, **kwargs).first(),
+                    operation=f"{cls.__name__}.filter.first",
+                )
+        except asyncio.TimeoutError:
+            logger.error(
+                f"数据库操作超时: {cls.__name__}.safe_get_or_none", LOG_COMMAND
+            )
+            return None
+        except Exception as e:
             # 其他类型的错误则继续抛出
+            logger.error(
+                f"数据库操作异常: {cls.__name__}.safe_get_or_none, {e!s}", LOG_COMMAND
+            )
             raise
 
 
@@ -334,6 +340,77 @@ class DbConnectError(Exception):
     pass
 
 
+POSTGRESQL_CONFIG = {
+    "max_size": 30,  # 最大连接数
+    "min_size": 5,  # 最小保持的连接数（可选）
+}
+
+
+MYSQL_CONFIG = {
+    "max_connections": 20,  # 最大连接数
+    "connect_timeout": 30,  # 连接超时（可选）
+}
+
+SQLITE_CONFIG = {
+    "journal_mode": "WAL",  # 提高并发写入性能
+    "timeout": 30,  # 锁等待超时（可选）
+}
+
+
+def get_config(db_url: str) -> dict:
+    """获取数据库配置"""
+    parsed = urlparse(BotConfig.db_url)
+
+    # 基础配置
+    config = {
+        "connections": {
+            "default": BotConfig.db_url  # 默认直接使用连接字符串
+        },
+        "apps": {
+            "models": {
+                "models": MODELS,
+                "default_connection": "default",
+            }
+        },
+        "timezone": "Asia/Shanghai",
+    }
+
+    # 根据数据库类型应用高级配置
+    if parsed.scheme.startswith("postgres"):
+        config["connections"]["default"] = {
+            "engine": "tortoise.backends.asyncpg",
+            "credentials": {
+                "host": parsed.hostname,
+                "port": parsed.port or 5432,
+                "user": parsed.username,
+                "password": parsed.password,
+                "database": parsed.path[1:],
+            },
+            **POSTGRESQL_CONFIG,
+        }
+    elif parsed.scheme == "mysql":
+        config["connections"]["default"] = {
+            "engine": "tortoise.backends.mysql",
+            "credentials": {
+                "host": parsed.hostname,
+                "port": parsed.port or 3306,
+                "user": parsed.username,
+                "password": parsed.password,
+                "database": parsed.path[1:],
+            },
+            **MYSQL_CONFIG,
+        }
+    elif parsed.scheme == "sqlite":
+        config["connections"]["default"] = {
+            "engine": "tortoise.backends.sqlite",
+            "credentials": {
+                "file_path": parsed.path[1:] or ":memory:",
+            },
+            **SQLITE_CONFIG,
+        }
+    return config
+
+
 @PriorityLifecycle.on_startup(priority=1)
 async def init():
     if not BotConfig.db_url:
@@ -349,9 +426,7 @@ async def init():
         raise DbUrlIsNode("\n" + error.strip())
     try:
         await Tortoise.init(
-            db_url=BotConfig.db_url,
-            modules={"models": MODELS},
-            timezone="Asia/Shanghai",
+            config=get_config(BotConfig.db_url),
         )
         if SCRIPT_METHOD:
             db = Tortoise.get_connection("default")
@@ -366,17 +441,21 @@ async def init():
                     if sql:
                         sql_list += sql
                 except Exception as e:
-                    logger.trace(f"{module} 执行SCRIPT_METHOD方法出错...", e=e)
+                    logger.debug(f"{module} 执行SCRIPT_METHOD方法出错...", e=e)
             for sql in sql_list:
-                logger.trace(f"执行SQL: {sql}")
+                logger.debug(f"执行SQL: {sql}")
                 try:
-                    await db.execute_query_dict(sql)
+                    await asyncio.wait_for(
+                        db.execute_query_dict(sql), timeout=DB_TIMEOUT_SECONDS
+                    )
                     # await TestSQL.raw(sql)
                 except Exception as e:
-                    logger.trace(f"执行SQL: {sql} 错误...", e=e)
+                    logger.debug(f"执行SQL: {sql} 错误...", e=e)
             if sql_list:
                 logger.debug("SCRIPT_METHOD方法执行完毕!")
+        logger.debug("开始生成数据库表结构...")
         await Tortoise.generate_schemas()
+        logger.debug("数据库表结构生成完毕!")
         logger.info("Database loaded successfully!")
     except Exception as e:
         raise DbConnectError(f"数据库连接错误... e:{e}") from e

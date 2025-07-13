@@ -87,12 +87,15 @@ class GroupConsole(Model):
         table = "group_console"
         table_description = "群组信息表"
         unique_together = ("group_id", "channel_id")
+        indexes = [  # noqa: RUF012
+            ("group_id",)
+        ]
 
     cache_type = CacheType.GROUPS
     """缓存类型"""
     cache_key_field = ("group_id", "channel_id")
     """缓存键字段"""
-    enable_lock: ClassVar[list[DbLockType]] = [DbLockType.CREATE]
+    enable_lock: ClassVar[list[DbLockType]] = [DbLockType.CREATE, DbLockType.UPSERT]
     """开启锁"""
 
     @classmethod
@@ -537,4 +540,6 @@ class GroupConsole(Model):
             " character varying(255) NOT NULL DEFAULT '';",
             "ALTER TABLE group_console ADD superuser_block_task"
             " character varying(255) NOT NULL DEFAULT '';",
+            "CREATE INDEX idx_group_console_group_id ON group_console(group_id);",
+            "CREATE INDEX idx_group_console_group_null_channel ON group_console(group_id) WHERE channel_id IS NULL;",  # 单独创建channel为空的索引 # noqa: E501
         ]

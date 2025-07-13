@@ -56,6 +56,7 @@ await message_list.save()
 ```
 """
 
+import asyncio
 from collections.abc import Callable
 from datetime import datetime
 from functools import wraps
@@ -500,7 +501,8 @@ class CacheManager:
                 logger.debug(f"清除所有 {cache_type} 缓存", LOG_COMMAND)
                 return await self.clear(cache_type)
         except Exception as e:
-            logger.error(f"清除缓存 {cache_type} 失败", LOG_COMMAND, e=e)
+            if f"缓存类型 {cache_type} 不存在" not in str(e):
+                logger.warning(f"清除缓存 {cache_type} 失败", LOG_COMMAND, e=e)
             return False
 
     async def get(
@@ -516,13 +518,18 @@ class CacheManager:
         返回:
             Any: 缓存数据，如果不存在返回默认值
         """
+        from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
+
         # 如果缓存被禁用或缓存模式为NONE，直接返回默认值
         if not self.enabled or cache_config.cache_mode == CacheMode.NONE:
             return default
-
+        cache_key = None
         try:
             cache_key = self._build_key(cache_type, key)
-            data = await self.cache_backend.get(cache_key)  # type: ignore
+            data = await asyncio.wait_for(
+                self.cache_backend.get(cache_key),  # type: ignore
+                timeout=DB_TIMEOUT_SECONDS,
+            )
 
             if data is None:
                 return default
@@ -534,6 +541,9 @@ class CacheManager:
             if model.result_type:
                 return self._deserialize_value(data, model.result_type)
             return data
+        except asyncio.TimeoutError:
+            logger.error(f"获取缓存 {cache_type}:{cache_key} 超时", LOG_COMMAND)
+            return default
         except Exception as e:
             logger.error(f"获取缓存 {cache_type} 失败", LOG_COMMAND, e=e)
             return default
@@ -556,10 +566,12 @@ class CacheManager:
         返回:
             bool: 是否成功
         """
+        from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
+
         # 如果缓存被禁用或缓存模式为NONE，直接返回False
         if not self.enabled or cache_config.cache_mode == CacheMode.NONE:
             return False
-
+        cache_key = None
         try:
             cache_key = self._build_key(cache_type, key)
             model = self.get_model(cache_type)
@@ -571,8 +583,14 @@ class CacheManager:
             ttl = expire if expire is not None else model.expire
 
             # 设置缓存
-            await self.cache_backend.set(cache_key, serialized_value, ttl=ttl)  # type: ignore
+            await asyncio.wait_for(
+                self.cache_backend.set(cache_key, serialized_value, ttl=ttl),  # type: ignore
+                timeout=DB_TIMEOUT_SECONDS,
+            )
             return True
+        except asyncio.TimeoutError:
+            logger.error(f"设置缓存 {cache_type}:{cache_key} 超时", LOG_COMMAND)
+            return False
         except Exception as e:
             logger.error(f"设置缓存 {cache_type} 失败", LOG_COMMAND, e=e)
             return False
@@ -647,7 +665,8 @@ class CacheManager:
                 await self.cache_backend.clear()  # type: ignore
             return True
         except Exception as e:
-            logger.error("清除缓存失败", LOG_COMMAND, e=e)
+            if f"缓存类型 {cache_type} 不存在" not in str(e):
+                logger.warning("清除缓存失败", LOG_COMMAND, e=e)
             return False
 
     async def close(self):
