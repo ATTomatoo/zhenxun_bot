@@ -72,7 +72,9 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
         if user_id and group_id:
             tasks.append(ban_dao.safe_get_or_none(user_id=user_id, group_id=group_id))
         if user_id:
-            tasks.append(ban_dao.safe_get_or_none(user_id=user_id, group_id=""))
+            tasks.append(
+                ban_dao.safe_get_or_none(user_id=user_id, group_id__isnull=True)
+            )
 
         # 等待所有查询完成，添加超时控制
         if tasks:
