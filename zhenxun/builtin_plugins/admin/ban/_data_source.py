@@ -9,14 +9,14 @@ from zhenxun.services.log import logger
 from zhenxun.utils.image_utils import BuildImage, ImageTemplate
 
 
-async def call_ban(user_id: str):
+async def call_ban(user_id: str, duration: int = 1):
     """调用ban
 
     参数:
         user_id: 用户id
     """
-    await BanConsole.ban(user_id, None, 9, 60 * 12)
-    logger.info("辱骂次数过多，已将用户加入黑名单...", "ban", session=user_id)
+    await BanConsole.ban(user_id, None, 9, duration * 60)
+    logger.info("被讨厌了，已将用户加入黑名单...", "ban", session=user_id)
 
 
 class BanManage:

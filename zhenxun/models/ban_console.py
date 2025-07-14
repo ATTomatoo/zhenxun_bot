@@ -30,10 +30,13 @@ class BanConsole(Model):
         table = "ban_console"
         table_description = "封禁人员/群组数据表"
         unique_together = ("user_id", "group_id")
+        indexes = [("user_id",), ("group_id",)]  # noqa: RUF012
 
     cache_type = CacheType.BAN
     """缓存类型"""
-    enable_lock: ClassVar[list[DbLockType]] = [DbLockType.CREATE]
+    cache_key_field = ("user_id", "group_id")
+    """缓存键字段"""
+    enable_lock: ClassVar[list[DbLockType]] = [DbLockType.CREATE, DbLockType.UPSERT]
     """开启锁"""
 
     @classmethod
@@ -197,3 +200,10 @@ class BanConsole(Model):
         if id is not None:
             return await cls.safe_get_or_none(id=id)
         return await cls._get_data(user_id, group_id)
+
+    @classmethod
+    async def _run_script(cls):
+        return [
+            "CREATE INDEX idx_ban_console_user_id ON ban_console(user_id);",
+            "CREATE INDEX idx_ban_console_group_id ON ban_console(group_id);",
+        ]

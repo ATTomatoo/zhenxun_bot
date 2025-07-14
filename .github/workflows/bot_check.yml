@@ -80,5 +80,5 @@ jobs:
           sed -i "s/^.*\?LOG_LEVEL.*/LOG_LEVEL=${{ env.LOG_LEVEL }}/g" .env.dev
           poetry run python3 bot_check.py
         env:
-          DB_URL: "sqlite://zhenxun.db"
+          DB_URL: "sqlite://:memory:"
           LOG_LEVEL: DEBUG

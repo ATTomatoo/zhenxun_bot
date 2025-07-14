@@ -31,6 +31,9 @@ class BotConsole(Model):
         table_description = "Bot数据表"
 
     cache_type = CacheType.BOT
+    """缓存类型"""
+    cache_key_field = "bot_id"
+    """缓存键字段"""
 
     @staticmethod
     def format(name: str) -> str:

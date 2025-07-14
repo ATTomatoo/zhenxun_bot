@@ -78,6 +78,8 @@ class DbLockType(StrEnum):
     """更新"""
     QUERY = "QUERY"
     """查询"""
+    UPSERT = "UPSERT"
+    """创建或更新"""
 
 
 class GoldHandle(StrEnum):
