@@ -249,8 +249,10 @@ class AuthChecker:
         try:
             bot_filter(session)
 
-            # 1. 加载上下文数据
+            # 1. 加载上下文数据（可能包含多次数据库/缓存访问，这里单独计时）
+            ctx_start = time.time()
             context = await self._load_context(matcher, bot, session, message)
+            hook_times["load_context"] = f"{time.time() - ctx_start:.3f}s"
 
             # 2. 按优先级执行检查
             # 阶段1：关键检查（ban、bot状态）
@@ -349,6 +351,7 @@ class AuthChecker:
 
             # 6. 阶段4：低优先级检查（金币检查）
             try:
+                cost_start = time.time()
                 cost_gold = await asyncio.wait_for(
                     auth_cost(context.user, context.plugin, context.session),
                     timeout=TIMEOUT_SECONDS,
@@ -358,7 +361,7 @@ class AuthChecker:
                         raise IsSuperuserException()
                     if not context.plugin.limit_superuser:
                         raise IsSuperuserException()
-                hook_times["cost_gold"] = f"{time.time() - start_time:.3f}s"
+                hook_times["cost_gold"] = f"{time.time() - cost_start:.3f}s"
             except asyncio.TimeoutError:
                 logger.error(
                     f"获取插件费用超时，模块: {context.plugin.module}",
