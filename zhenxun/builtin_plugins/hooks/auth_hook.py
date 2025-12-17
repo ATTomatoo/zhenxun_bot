@@ -9,14 +9,14 @@ from nonebot_plugin_uninfo import Uninfo
 from zhenxun.services.log import logger
 
 from .auth.config import LOGGER_COMMAND
-from .auth_checker import LimitManager, auth
+from .auth_checker import LimitManager, _auth_checker
 
 
 # # 权限检测
 @run_preprocessor
 async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: UniMsg):
     start_time = time.time()
-    await auth(
+    await _auth_checker.check(
         matcher,
         event,
         bot,

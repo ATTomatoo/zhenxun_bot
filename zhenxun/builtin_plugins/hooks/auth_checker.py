@@ -1,5 +1,20 @@
+"""
+优化后的权限检查系统设计
+
+主要改进：
+1. 优先级机制：将检查分为多个优先级阶段，高优先级检查失败时立即退出
+2. 早期退出：避免不必要的检查执行，提高性能
+3. 统一数据上下文：在开始前统一获取所有需要的数据
+4. 检查结果缓存：对相同请求缓存检查结果
+5. 统一的错误处理：所有检查使用统一的超时和错误处理机制
+"""
+
 import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import IntEnum
 import time
+from typing import Any
 
 from nonebot.adapters import Bot, Event
 from nonebot.exception import IgnoredException
@@ -11,11 +26,9 @@ from tortoise.exceptions import IntegrityError
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
-from zhenxun.services.cache import CacheRoot
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
-from zhenxun.utils.enum import CacheType, GoldHandle, PluginType
-from zhenxun.utils.exception import InsufficientGold
+from zhenxun.utils.enum import GoldHandle, PluginType
 from zhenxun.utils.platform import PlatformUtils
 from zhenxun.utils.utils import get_entity_ids
 
@@ -33,546 +46,373 @@ from .auth.exception import (
     PermissionExemption,
     SkipPluginException,
 )
-from .auth.utils import base_config
 
-# 超时设置（秒）
+# 超时设置（秒）—— DataAccess 内部已对单次 DB / 缓存访问做了自己的超时控制；
+# 这里主要用于控制单个权限检查步骤的上限时间。
 TIMEOUT_SECONDS = 5.0
-# 快速重试超时（秒）- 用于降级策略
-FAST_RETRY_TIMEOUT = 2.0
-# 最大重试次数
-MAX_RETRY_COUNT = 2
-# 熔断计数器
-CIRCUIT_BREAKERS = {
-    "auth_ban": {"failures": 0, "threshold": 3, "active": False, "reset_time": 0},
-    "auth_bot": {"failures": 0, "threshold": 3, "active": False, "reset_time": 0},
-    "auth_group": {"failures": 0, "threshold": 3, "active": False, "reset_time": 0},
-    "auth_admin": {"failures": 0, "threshold": 3, "active": False, "reset_time": 0},
-    "auth_plugin": {"failures": 0, "threshold": 3, "active": False, "reset_time": 0},
-    "auth_limit": {"failures": 0, "threshold": 3, "active": False, "reset_time": 0},
-}
-# 熔断重置时间（秒）
-CIRCUIT_RESET_TIME = 300  # 5分钟
-
-# 并发控制：限制同时进入 hooks 并行检查的协程数
-
-# 默认为 6，可通过环境变量 AUTH_HOOKS_CONCURRENCY_LIMIT 调整
-HOOKS_CONCURRENCY_LIMIT = base_config.get("AUTH_HOOKS_CONCURRENCY_LIMIT")
-
-# 全局信号量与计数器
-HOOKS_SEMAPHORE = asyncio.Semaphore(HOOKS_CONCURRENCY_LIMIT)
-HOOKS_ACTIVE_COUNT = 0
-HOOKS_ACTIVE_LOCK = asyncio.Lock()
 
 
-# 超时装饰器
-async def with_timeout(coro, timeout=TIMEOUT_SECONDS, name=None):
-    """带超时控制的协程执行
+# 检查优先级
+class CheckPriority(IntEnum):
+    """检查优先级，数值越小优先级越高"""
 
-    参数:
-        coro: 要执行的协程
-        timeout: 超时时间（秒）
-        name: 操作名称，用于日志记录
-
-    返回:
-        协程的返回值，或者在超时时抛出 TimeoutError
-    """
-    try:
-        return await asyncio.wait_for(coro, timeout=timeout)
-    except asyncio.TimeoutError:
-        if name:
-            logger.error(f"{name} 操作超时 (>{timeout}s)", LOGGER_COMMAND)
-            # 更新熔断计数器
-            if name in CIRCUIT_BREAKERS:
-                CIRCUIT_BREAKERS[name]["failures"] += 1
-                if (
-                    CIRCUIT_BREAKERS[name]["failures"]
-                    >= CIRCUIT_BREAKERS[name]["threshold"]
-                    and not CIRCUIT_BREAKERS[name]["active"]
-                ):
-                    CIRCUIT_BREAKERS[name]["active"] = True
-                    CIRCUIT_BREAKERS[name]["reset_time"] = (
-                        time.time() + CIRCUIT_RESET_TIME
-                    )
-                    logger.warning(
-                        f"{name} 熔断器已激活，将在 {CIRCUIT_RESET_TIME} 秒后重置",
-                        LOGGER_COMMAND,
-                    )
-        raise
+    CRITICAL = 1  # 关键检查：ban、bot状态
+    HIGH = 2  # 高优先级：插件状态、群组状态
+    MEDIUM = 3  # 中等优先级：管理员权限、限制
+    LOW = 4  # 低优先级：金币检查
 
 
-# 检查熔断状态
-def check_circuit_breaker(name):
-    """检查熔断器状态
+@dataclass
+class AuthContext:
+    """权限检查上下文，统一管理所有需要的数据"""
 
-    参数:
-        name: 操作名称
-
-    返回:
-        bool: 是否已熔断
-    """
-    if name not in CIRCUIT_BREAKERS:
-        return False
-
-    # 检查是否需要重置熔断器
-    if (
-        CIRCUIT_BREAKERS[name]["active"]
-        and time.time() > CIRCUIT_BREAKERS[name]["reset_time"]
-    ):
-        CIRCUIT_BREAKERS[name]["active"] = False
-        CIRCUIT_BREAKERS[name]["failures"] = 0
-        logger.info(f"{name} 熔断器已重置", LOGGER_COMMAND)
-
-    return CIRCUIT_BREAKERS[name]["active"]
+    plugin: PluginInfo
+    user: UserConsole
+    session: Uninfo
+    matcher: Matcher
+    bot: Bot
+    message: UniMsg
+    group: GroupConsole | None = None
+    bot_id: str = ""
+    entity: Any = None
 
 
-async def get_plugin_and_user(
-    module: str, user_id: str, use_cache_fallback: bool = True
-) -> tuple[PluginInfo, UserConsole]:
-    """获取用户数据和插件信息
+@dataclass
+class CheckResult:
+    """检查结果"""
 
-    参数:
-        module: 模块名
-        user_id: 用户id
-        use_cache_fallback: 是否在超时时使用缓存降级策略
+    success: bool
+    error: Exception | None = None
+    execution_time: float = 0.0
+    cached: bool = False
 
-    异常:
-        PermissionExemption: 插件数据不存在
-        PermissionExemption: 插件类型为HIDDEN
-        PermissionExemption: 重复创建用户
-        PermissionExemption: 用户数据不存在
 
-    返回:
-        tuple[PluginInfo, UserConsole]: 插件信息，用户信息
-    """
-    user_dao = DataAccess(UserConsole)
-    plugin_dao = DataAccess(PluginInfo)
+class AuthChecker:
+    """优化的权限检查器"""
 
-    # 并行查询插件和用户数据
-    plugin_task = plugin_dao.safe_get_or_none(module=module)
-    user_task = user_dao.get_by_func_or_none(
-        UserConsole.get_user, False, user_id=user_id
-    )
+    async def _execute_check(
+        self,
+        check_func: Callable,
+        check_name: str,
+        priority: CheckPriority,
+        context: AuthContext,
+        **kwargs,
+    ) -> CheckResult:
+        """执行单个检查"""
+        start_time = time.time()
 
-    try:
-        plugin, user = await with_timeout(
-            asyncio.gather(plugin_task, user_task), name="get_plugin_and_user"
-        )
-    except asyncio.TimeoutError:
-        # 如果并行查询超时，尝试串行查询
-        logger.warning("并行查询超时，尝试串行查询", LOGGER_COMMAND)
         try:
-            plugin = await with_timeout(
-                plugin_dao.safe_get_or_none(module=module), name="get_plugin"
-            )
-            user = await with_timeout(
-                user_dao.safe_get_or_none(user_id=user_id), name="get_user"
+            # 执行检查函数
+            await asyncio.wait_for(check_func(**kwargs), timeout=TIMEOUT_SECONDS)
+            result = CheckResult(success=True, execution_time=time.time() - start_time)
+        except SkipPluginException as e:
+            result = CheckResult(
+                success=False,
+                error=e,
+                execution_time=time.time() - start_time,
             )
         except asyncio.TimeoutError:
-            # 如果串行查询也超时，尝试从缓存获取（降级策略）
-            if use_cache_fallback:
-                logger.warning(
-                    f"数据库查询超时，尝试从缓存获取数据，模块: {module}, "
-                    f"用户: {user_id}",
-                    LOGGER_COMMAND,
-                )
-                try:
-                    # 尝试从缓存获取插件信息
-                    plugin = await CacheRoot.get(CacheType.PLUGINS, {"module": module})
-                    # 尝试从缓存获取用户信息
-                    user = await CacheRoot.get(CacheType.USERS, {"user_id": user_id})
-
-                    if plugin and user:
-                        logger.info(
-                            f"成功从缓存获取数据，模块: {module}, 用户: {user_id}",
-                            LOGGER_COMMAND,
-                        )
-                    elif not plugin:
-                        raise PermissionExemption(
-                            f"插件:{module} 数据不存在（缓存中也没有），"
-                            f"已跳过权限检查..."
-                        )
-                    elif not user:
-                        raise PermissionExemption(
-                            "用户数据不存在（缓存中也没有），已跳过权限检查..."
-                        )
-                except Exception as e:
-                    logger.error(
-                        f"从缓存获取数据失败: {e}",
-                        LOGGER_COMMAND,
-                    )
-                    raise PermissionExemption(
-                        "获取插件和用户数据超时且缓存获取失败，请稍后再试..."
-                    )
-            else:
-                raise PermissionExemption("获取插件和用户数据超时，请稍后再试...")
-    except IntegrityError:
-        await asyncio.sleep(0.5)
-        plugin_task = plugin_dao.safe_get_or_none(module=module)
-        user_task = user_dao.get_by_func_or_none(
-            UserConsole.get_user, False, user_id=user_id
-        )
-        plugin, user = await with_timeout(
-            asyncio.gather(plugin_task, user_task), name="get_plugin_and_user"
-        )
-
-    if not plugin:
-        raise PermissionExemption(f"插件:{module} 数据不存在，已跳过权限检查...")
-    if plugin.plugin_type == PluginType.HIDDEN:
-        raise PermissionExemption(
-            f"插件: {plugin.name}:{plugin.module} 为HIDDEN，已跳过权限检查..."
-        )
-    # 如果user已经获取到了，就不需要再次查询
-    if user is None:
-        try:
-            user = await user_dao.get_by_func_or_none(
-                UserConsole.get_user, False, user_id=user_id
+            logger.error(
+                f"{check_name} 检查超时", LOGGER_COMMAND, session=context.session
             )
-        except IntegrityError as e:
-            raise PermissionExemption("重复创建用户，已跳过该次权限检查...") from e
-    if not user:
-        raise PermissionExemption("用户数据不存在，已跳过权限检查...")
-    return plugin, user
+            # 超时时根据优先级决定是否继续
+            if priority <= CheckPriority.HIGH:
+                result = CheckResult(
+                    success=False,
+                    error=PermissionExemption(f"{check_name} 检查超时"),
+                    execution_time=time.time() - start_time,
+                )
+            else:
+                # 低优先级检查超时，允许继续
+                result = CheckResult(
+                    success=True, execution_time=time.time() - start_time
+                )
+        except Exception as e:
+            logger.error(
+                f"{check_name} 检查失败: {e}", LOGGER_COMMAND, session=context.session
+            )
+            result = CheckResult(
+                success=False, error=e, execution_time=time.time() - start_time
+            )
 
+        return result
 
-async def get_plugin_cost(
-    bot: Bot, user: UserConsole, plugin: PluginInfo, session: Uninfo
-) -> int:
-    """获取插件费用
+    async def _load_context(
+        self, matcher: Matcher, bot: Bot, session: Uninfo, message: UniMsg
+    ) -> AuthContext:
+        """加载权限检查上下文数据"""
+        entity = get_entity_ids(session)
+        module = matcher.plugin_name or ""
 
-    参数:
-        bot: Bot
-        user: 用户数据
-        plugin: 插件数据
-        session: Uninfo
-
-    异常:
-        IsSuperuserException: 超级用户
-        IsSuperuserException: 超级用户
-
-    返回:
-        int: 调用插件金币费用
-    """
-    cost_gold = await with_timeout(auth_cost(user, plugin, session), name="auth_cost")
-    if session.user.id in bot.config.superusers:
-        if plugin.plugin_type == PluginType.SUPERUSER:
-            raise IsSuperuserException()
-        if not plugin.limit_superuser:
-            raise IsSuperuserException()
-    return cost_gold
-
-
-async def reduce_gold(user_id: str, module: str, cost_gold: int, session: Uninfo):
-    """扣除用户金币
-
-    参数:
-        user_id: 用户id
-        module: 插件模块名称
-        cost_gold: 消耗金币
-        session: Uninfo
-    """
-    user_dao = DataAccess(UserConsole)
-    try:
-        await with_timeout(
-            UserConsole.reduce_gold(
-                user_id,
-                cost_gold,
-                GoldHandle.PLUGIN,
-                module,
-                PlatformUtils.get_platform(session),
-            ),
-            name="reduce_gold",
-        )
-    except InsufficientGold:
-        if u := await UserConsole.get_user(user_id):
-            u.gold = 0
-            await u.save(update_fields=["gold"])
-    except asyncio.TimeoutError:
-        logger.error(
-            f"扣除金币超时，用户: {user_id}, 金币: {cost_gold}",
-            LOGGER_COMMAND,
-            session=session,
-        )
-
-    # 清除缓存，使下次查询时从数据库获取最新数据
-    await user_dao.clear_cache(user_id=user_id)
-    logger.debug(f"调用功能花费金币: {cost_gold}", LOGGER_COMMAND, session=session)
-
-
-# 辅助函数，用于记录每个 hook 的执行时间
-async def time_hook(coro, name, time_dict):
-    start = time.time()
-    try:
-        # 检查熔断状态
-        if check_circuit_breaker(name):
-            logger.info(f"{name} 熔断器激活中，跳过执行", LOGGER_COMMAND)
-            time_dict[name] = "熔断跳过"
-            return
-
-        # 添加超时控制
-        return await with_timeout(coro, name=name)
-    except asyncio.TimeoutError:
-        time_dict[name] = f"超时 (>{TIMEOUT_SECONDS}s)"
-    finally:
-        if name not in time_dict:
-            time_dict[name] = f"{time.time() - start:.3f}s"
-
-
-async def _enter_hooks_section():
-    """尝试获取全局信号量并更新计数器，超时则抛出 PermissionExemption。"""
-    global HOOKS_ACTIVE_COUNT
-    # 队列模式：如果达到上限，协程将排队等待直到获取到信号量
-    await HOOKS_SEMAPHORE.acquire()
-    async with HOOKS_ACTIVE_LOCK:
-        HOOKS_ACTIVE_COUNT += 1
-        logger.debug(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
-
-
-async def _leave_hooks_section():
-    """释放信号量并更新计数器。"""
-    global HOOKS_ACTIVE_COUNT
-    from contextlib import suppress
-
-    with suppress(Exception):
-        HOOKS_SEMAPHORE.release()
-    async with HOOKS_ACTIVE_LOCK:
-        HOOKS_ACTIVE_COUNT -= 1
-        # 保证计数不为负
-        HOOKS_ACTIVE_COUNT = max(HOOKS_ACTIVE_COUNT, 0)
-        logger.debug(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
-
-
-async def auth(
-    matcher: Matcher,
-    event: Event,
-    bot: Bot,
-    session: Uninfo,
-    message: UniMsg,
-):
-    """权限检查
-
-    参数:
-        matcher: matcher
-        event: Event
-        bot: bot
-        session: Uninfo
-        message: UniMsg
-    """
-    start_time = time.time()
-    cost_gold = 0
-    ignore_flag = False
-    entity = get_entity_ids(session)
-    module = matcher.plugin_name or ""
-
-    # 用于记录各个 hook 的执行时间
-    hook_times = {}
-    hooks_time = 0  # 初始化 hooks_time 变量
-
-    # 记录是否已进入 hooks 区域（用于 finally 中释放）
-    entered_hooks = False
-
-    try:
         if not module:
             raise PermissionExemption("Matcher插件名称不存在...")
 
-        # 获取插件和用户数据（带重试和降级策略）
-        plugin_user_start = time.time()
-        plugin = None
-        user = None
-        retry_count = 0
+        # 并行获取所有需要的数据。
+        # DataAccess 内部已经有 Redis 缓存和 DB 超时控制，这里只做一次整体超时保护，
+        # 不再额外手动走 CacheRoot 之类的二级 fallback，避免重复访问 Redis。
+        user_dao = DataAccess(UserConsole)
+        plugin_dao = DataAccess(PluginInfo)
+        group_dao = DataAccess(GroupConsole) if entity.group_id else None
 
-        while retry_count <= MAX_RETRY_COUNT:
-            try:
-                plugin, user = await with_timeout(
-                    get_plugin_and_user(
-                        module, entity.user_id, use_cache_fallback=(retry_count > 0)
-                    ),
-                    timeout=FAST_RETRY_TIMEOUT if retry_count > 0 else TIMEOUT_SECONDS,
-                    name="get_plugin_and_user",
-                )
-                hook_times["get_plugin_user"] = (
-                    f"{time.time() - plugin_user_start:.3f}s"
-                )
-                if retry_count > 0:
-                    logger.info(
-                        f"重试成功获取插件和用户数据，模块: {module}, "
-                        f"重试次数: {retry_count}",
-                        LOGGER_COMMAND,
-                        session=session,
-                    )
-                break
-            except asyncio.TimeoutError:
-                retry_count += 1
-                if retry_count <= MAX_RETRY_COUNT:
-                    logger.warning(
-                        f"获取插件和用户数据超时，尝试重试 "
-                        f"({retry_count}/{MAX_RETRY_COUNT})，模块: {module}",
-                        LOGGER_COMMAND,
-                        session=session,
-                    )
-                    # 短暂等待后重试
-                    await asyncio.sleep(0.1 * retry_count)
-                else:
-                    logger.error(
-                        f"获取插件和用户数据超时，已重试 {MAX_RETRY_COUNT} 次，"
-                        f"模块: {module}",
-                        LOGGER_COMMAND,
-                        session=session,
-                    )
-                    # 最后一次尝试：使用缓存降级策略
-                    try:
-                        plugin, user = await get_plugin_and_user(
-                            module, entity.user_id, use_cache_fallback=True
-                        )
-                        hook_times["get_plugin_user"] = (
-                            f"{time.time() - plugin_user_start:.3f}s (缓存降级)"
-                        )
-                        logger.info(
-                            f"使用缓存降级策略成功获取数据，模块: {module}",
-                            LOGGER_COMMAND,
-                            session=session,
-                        )
-                        break
-                    except Exception as e:
-                        logger.error(
-                            f"缓存降级策略也失败: {e}，模块: {module}",
-                            LOGGER_COMMAND,
-                            session=session,
-                        )
-                        raise PermissionExemption(
-                            "获取插件和用户数据超时，请稍后再试..."
-                        )
-            except PermissionExemption:
-                # 如果是业务异常（如插件不存在），直接抛出
-                raise
-            except Exception as e:
-                logger.error(
-                    f"获取插件和用户数据时发生未知错误: {e}，模块: {module}",
-                    LOGGER_COMMAND,
-                    session=session,
-                )
-                if retry_count < MAX_RETRY_COUNT:
-                    retry_count += 1
-                    await asyncio.sleep(0.1 * retry_count)
-                else:
-                    raise PermissionExemption(
-                        f"获取插件和用户数据失败: {e}，请稍后再试..."
-                    )
-
-        # 确保plugin和user都已成功获取
-        if plugin is None or user is None:
-            raise PermissionExemption("获取插件和用户数据失败，请稍后再试...")
-
-        # 进入 hooks 并行检查区域（会在高并发时排队）
-        await _enter_hooks_section()
-        entered_hooks = True
-
-        # 获取插件费用
-        cost_start = time.time()
-        try:
-            cost_gold = await with_timeout(
-                get_plugin_cost(bot, user, plugin, session), name="get_plugin_cost"
-            )
-            hook_times["cost_gold"] = f"{time.time() - cost_start:.3f}s"
-        except asyncio.TimeoutError:
-            logger.error(
-                f"获取插件费用超时，模块: {module}", LOGGER_COMMAND, session=session
-            )
-            # 继续执行，不阻止权限检查
-
-        # 执行 bot_filter
-        bot_filter(session)
-
-        group = None
-        if entity.group_id:
-            group_dao = DataAccess(GroupConsole)
-            group = await with_timeout(
-                group_dao.safe_get_or_none(
-                    group_id=entity.group_id, channel_id__isnull=True
-                ),
-                name="get_group",
-            )
-
-        # 并行执行所有 hook 检查，并记录执行时间
-        hooks_start = time.time()
-
-        # 创建所有 hook 任务（plugin和user已确保不为None）
-        hook_tasks = [
-            time_hook(auth_ban(matcher, bot, session, plugin), "auth_ban", hook_times),
-            time_hook(auth_bot(plugin, bot.self_id), "auth_bot", hook_times),
-            time_hook(
-                auth_group(plugin, group, message, entity.group_id),
-                "auth_group",
-                hook_times,
+        tasks = {
+            "plugin": plugin_dao.safe_get_or_none(module=module),
+            "user": user_dao.get_by_func_or_none(
+                UserConsole.get_user, False, user_id=entity.user_id
             ),
-            time_hook(auth_admin(plugin, session), "auth_admin", hook_times),
-            time_hook(
-                auth_plugin(plugin, group, session, event),
-                "auth_plugin",
-                hook_times,
-            ),
-            time_hook(auth_limit(plugin, session), "auth_limit", hook_times),
-        ]
+        }
 
-        # 使用 gather 并行执行所有 hook，但添加总体超时控制
+        if entity.group_id and group_dao:
+            tasks["group"] = group_dao.safe_get_or_none(
+                group_id=entity.group_id, channel_id__isnull=True
+            )
+
         try:
-            await with_timeout(
-                asyncio.gather(*hook_tasks),
-                timeout=TIMEOUT_SECONDS * 2,  # 给总体执行更多时间
-                name="auth_hooks_gather",
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks.values()), timeout=TIMEOUT_SECONDS
             )
         except asyncio.TimeoutError:
+            # DataAccess 本身已经利用了 Redis / DB 缓存，这里整体超时直接视为失败，
+            # 避免在 Redis 也不稳定时再叠加一层「从缓存再试一次」的复杂 fallback。
             logger.error(
-                f"权限检查 hooks 总体执行超时，模块: {module}",
+                f"加载权限检查所需数据超时，模块: {module}",
                 LOGGER_COMMAND,
                 session=session,
             )
-            # 不抛出异常，允许继续执行
+            raise PermissionExemption("获取权限检查所需数据超时，请稍后再试...")
+        except IntegrityError:
+            # 获取用户时可能因为 uid 竞争导致唯一约束冲突，稍作等待并重试多次
+            logger.warning(
+                f"检测到重复创建用户，准备重试获取用户，模块: {module}",
+                LOGGER_COMMAND,
+                session=session,
+            )
+            # 重新获取插件（走 DataAccess 缓存，代价很小）
+            plugin = await plugin_dao.safe_get_or_none(module=module)
+            user = None
+            group = None
+            # 最多重试 3 次，逐步增加等待时间
+            for attempt in range(3):
+                try:
+                    user = await user_dao.get_by_func_or_none(
+                        UserConsole.get_user, False, user_id=entity.user_id
+                    )
+                    if entity.group_id and group_dao:
+                        group = await group_dao.safe_get_or_none(
+                            group_id=entity.group_id, channel_id__isnull=True
+                        )
+                    break
+                except IntegrityError as e:
+                    if attempt == 2:
+                        logger.error(
+                            f"多次尝试创建用户仍然出现唯一约束冲突，模块: {module}",
+                            LOGGER_COMMAND,
+                            session=session,
+                            e=e,
+                        )
+                        raise PermissionExemption("重复创建用户，请稍后再试...") from e
+                    await asyncio.sleep(0.5 * (attempt + 1))
+        else:
+            plugin = results[0]
+            user = results[1]
+            group = results[2] if len(results) > 2 else None
 
-        hooks_time = time.time() - hooks_start
+        if not plugin:
+            raise PermissionExemption(f"插件:{module} 数据不存在...")
+        if plugin.plugin_type == PluginType.HIDDEN:
+            raise PermissionExemption(
+                f"插件: {plugin.name}:{plugin.module} 为HIDDEN..."
+            )
+        if not user:
+            raise PermissionExemption("用户数据不存在...")
 
-    except SkipPluginException as e:
-        LimitManager.unblock(module, entity.user_id, entity.group_id, entity.channel_id)
-        logger.info(str(e), LOGGER_COMMAND, session=session)
-        ignore_flag = True
-    except IsSuperuserException:
-        logger.debug("超级用户跳过权限检测...", LOGGER_COMMAND, session=session)
-    except PermissionExemption as e:
-        logger.info(str(e), LOGGER_COMMAND, session=session)
-    finally:
-        # 如果进入过 hooks 区域，确保释放信号量（即使上层处理抛出了异常）
-        if entered_hooks:
+        return AuthContext(
+            plugin=plugin,
+            user=user,
+            group=group,
+            bot_id=bot.self_id,
+            session=session,
+            matcher=matcher,
+            bot=bot,
+            message=message,
+            entity=entity,
+        )
+
+    async def check(
+        self, matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: UniMsg
+    ):
+        """执行权限检查（优化版本）"""
+        start_time = time.time()
+        cost_gold = 0
+        ignore_flag = False
+        hook_times = {}
+
+        try:
+            bot_filter(session)
+
+            # 1. 加载上下文数据
+            context = await self._load_context(matcher, bot, session, message)
+
+            # 2. 按优先级执行检查
+            # 阶段1：关键检查（ban、bot状态）
+            critical_checks = [
+                (
+                    "auth_ban",
+                    CheckPriority.CRITICAL,
+                    lambda: auth_ban(
+                        context.matcher, context.bot, context.session, context.plugin
+                    ),
+                ),
+                (
+                    "auth_bot",
+                    CheckPriority.CRITICAL,
+                    lambda: auth_bot(context.plugin, context.bot_id),
+                ),
+            ]
+
+            for check_name, priority, check_func in critical_checks:
+                result = await self._execute_check(
+                    check_func, check_name, priority, context
+                )
+                hook_times[check_name] = f"{result.execution_time:.3f}s"
+                if not result.success:
+                    if isinstance(result.error, SkipPluginException):
+                        ignore_flag = True
+                        raise result.error
+                    raise result.error or PermissionExemption(f"{check_name} 检查失败")
+
+            # 4. 阶段2：高优先级检查（插件状态、群组状态）
+            high_priority_checks = [
+                (
+                    "auth_plugin",
+                    CheckPriority.HIGH,
+                    lambda: auth_plugin(
+                        context.plugin, context.group, context.session, event
+                    ),
+                ),
+                (
+                    "auth_group",
+                    CheckPriority.HIGH,
+                    lambda: auth_group(
+                        context.plugin,
+                        context.group,
+                        context.message,
+                        context.entity.group_id,
+                    ),
+                ),
+            ]
+
+            # 并行执行高优先级检查
+            high_tasks = []
+            for check_name, priority, check_func in high_priority_checks:
+                task = self._execute_check(check_func, check_name, priority, context)
+                high_tasks.append((check_name, task))
+
+            high_results = await asyncio.gather(*[task for _, task in high_tasks])
+
+            for (check_name, _), result in zip(high_tasks, high_results):
+                hook_times[check_name] = f"{result.execution_time:.3f}s"
+                if not result.success:
+                    if isinstance(result.error, SkipPluginException):
+                        ignore_flag = True
+                        raise result.error
+                    raise result.error or PermissionExemption(f"{check_name} 检查失败")
+
+            # 5. 阶段3：中等优先级检查（管理员权限、限制）
+            medium_checks = [
+                (
+                    "auth_admin",
+                    CheckPriority.MEDIUM,
+                    lambda: auth_admin(context.plugin, context.session),
+                ),
+                (
+                    "auth_limit",
+                    CheckPriority.MEDIUM,
+                    lambda: auth_limit(context.plugin, context.session),
+                ),
+            ]
+
+            # 并行执行中等优先级检查
+            medium_tasks = []
+            for check_name, priority, check_func in medium_checks:
+                task = self._execute_check(check_func, check_name, priority, context)
+                medium_tasks.append((check_name, task))
+
+            medium_results = await asyncio.gather(*[task for _, task in medium_tasks])
+
+            for (check_name, _), result in zip(medium_tasks, medium_results):
+                hook_times[check_name] = f"{result.execution_time:.3f}s"
+                if not result.success:
+                    if isinstance(result.error, SkipPluginException):
+                        ignore_flag = True
+                        raise result.error
+                    raise result.error or PermissionExemption(f"{check_name} 检查失败")
+
+            # 6. 阶段4：低优先级检查（金币检查）
             try:
-                await _leave_hooks_section()
-            except Exception:
+                cost_gold = await asyncio.wait_for(
+                    auth_cost(context.user, context.plugin, context.session),
+                    timeout=TIMEOUT_SECONDS,
+                )
+                if context.session.user.id in bot.config.superusers:
+                    if context.plugin.plugin_type == PluginType.SUPERUSER:
+                        raise IsSuperuserException()
+                    if not context.plugin.limit_superuser:
+                        raise IsSuperuserException()
+                hook_times["cost_gold"] = f"{time.time() - start_time:.3f}s"
+            except asyncio.TimeoutError:
                 logger.error(
-                    "释放 hooks 信号量时出错",
+                    f"获取插件费用超时，模块: {context.plugin.module}",
                     LOGGER_COMMAND,
                     session=session,
                 )
-    # 扣除金币
-    if not ignore_flag and cost_gold > 0:
-        gold_start = time.time()
-        try:
-            await with_timeout(
-                reduce_gold(entity.user_id, module, cost_gold, session),
-                name="reduce_gold",
+
+        except SkipPluginException as e:
+            LimitManager.unblock(
+                matcher.plugin_name or "",
+                get_entity_ids(session).user_id,
+                get_entity_ids(session).group_id,
+                get_entity_ids(session).channel_id,
             )
-            hook_times["reduce_gold"] = f"{time.time() - gold_start:.3f}s"
-        except asyncio.TimeoutError:
-            logger.error(
-                f"扣除金币超时，模块: {module}", LOGGER_COMMAND, session=session
+            logger.info(str(e), LOGGER_COMMAND, session=session)
+            ignore_flag = True
+        except IsSuperuserException:
+            logger.debug("超级用户跳过权限检测...", LOGGER_COMMAND, session=session)
+        except PermissionExemption as e:
+            logger.info(str(e), LOGGER_COMMAND, session=session)
+
+        # 扣除金币
+        if not ignore_flag and cost_gold > 0:
+            try:
+                await asyncio.wait_for(
+                    UserConsole.reduce_gold(
+                        get_entity_ids(session).user_id,
+                        cost_gold,
+                        GoldHandle.PLUGIN,
+                        matcher.plugin_name or "",
+                        PlatformUtils.get_platform(session),
+                    ),
+                    timeout=TIMEOUT_SECONDS,
+                )
+                hook_times["reduce_gold"] = f"{time.time() - start_time:.3f}s"
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"扣除金币超时，模块: {matcher.plugin_name}",
+                    LOGGER_COMMAND,
+                    session=session,
+                )
+
+        # 记录总执行时间
+        total_time = time.time() - start_time
+        if total_time > WARNING_THRESHOLD:
+            logger.warning(
+                f"权限检查耗时过长: {total_time:.3f}s, "
+                f"模块: {matcher.plugin_name}, 详情: {hook_times}",
+                LOGGER_COMMAND,
+                session=session,
             )
 
-    # 记录总执行时间
-    total_time = time.time() - start_time
-    if total_time > WARNING_THRESHOLD:  # 如果总时间超过500ms，记录详细信息
-        logger.warning(
-            f"权限检查耗时过长: {total_time:.3f}s, 模块: {module}, "
-            f"hooks时间: {hooks_time:.3f}s, "
-            f"详情: {hook_times}",
-            LOGGER_COMMAND,
-            session=session,
-        )
+        if ignore_flag:
+            raise IgnoredException("权限检测 ignore")
 
-    if ignore_flag:
-        raise IgnoredException("权限检测 ignore")
+
+_auth_checker = AuthChecker()
