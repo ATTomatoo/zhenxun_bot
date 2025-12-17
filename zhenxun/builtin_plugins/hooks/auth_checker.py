@@ -11,9 +11,10 @@ from tortoise.exceptions import IntegrityError
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
+from zhenxun.services.cache import CacheRoot
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
-from zhenxun.utils.enum import GoldHandle, PluginType
+from zhenxun.utils.enum import CacheType, GoldHandle, PluginType
 from zhenxun.utils.exception import InsufficientGold
 from zhenxun.utils.platform import PlatformUtils
 from zhenxun.utils.utils import get_entity_ids
@@ -36,6 +37,10 @@ from .auth.utils import base_config
 
 # 超时设置（秒）
 TIMEOUT_SECONDS = 5.0
+# 快速重试超时（秒）- 用于降级策略
+FAST_RETRY_TIMEOUT = 2.0
+# 最大重试次数
+MAX_RETRY_COUNT = 2
 # 熔断计数器
 CIRCUIT_BREAKERS = {
     "auth_ban": {"failures": 0, "threshold": 3, "active": False, "reset_time": 0},
@@ -121,13 +126,14 @@ def check_circuit_breaker(name):
 
 
 async def get_plugin_and_user(
-    module: str, user_id: str
+    module: str, user_id: str, use_cache_fallback: bool = True
 ) -> tuple[PluginInfo, UserConsole]:
     """获取用户数据和插件信息
 
     参数:
         module: 模块名
         user_id: 用户id
+        use_cache_fallback: 是否在超时时使用缓存降级策略
 
     异常:
         PermissionExemption: 插件数据不存在
@@ -154,12 +160,51 @@ async def get_plugin_and_user(
     except asyncio.TimeoutError:
         # 如果并行查询超时，尝试串行查询
         logger.warning("并行查询超时，尝试串行查询", LOGGER_COMMAND)
-        plugin = await with_timeout(
-            plugin_dao.safe_get_or_none(module=module), name="get_plugin"
-        )
-        user = await with_timeout(
-            user_dao.safe_get_or_none(user_id=user_id), name="get_user"
-        )
+        try:
+            plugin = await with_timeout(
+                plugin_dao.safe_get_or_none(module=module), name="get_plugin"
+            )
+            user = await with_timeout(
+                user_dao.safe_get_or_none(user_id=user_id), name="get_user"
+            )
+        except asyncio.TimeoutError:
+            # 如果串行查询也超时，尝试从缓存获取（降级策略）
+            if use_cache_fallback:
+                logger.warning(
+                    f"数据库查询超时，尝试从缓存获取数据，模块: {module}, "
+                    f"用户: {user_id}",
+                    LOGGER_COMMAND,
+                )
+                try:
+                    # 尝试从缓存获取插件信息
+                    plugin = await CacheRoot.get(CacheType.PLUGINS, {"module": module})
+                    # 尝试从缓存获取用户信息
+                    user = await CacheRoot.get(CacheType.USERS, {"user_id": user_id})
+
+                    if plugin and user:
+                        logger.info(
+                            f"成功从缓存获取数据，模块: {module}, 用户: {user_id}",
+                            LOGGER_COMMAND,
+                        )
+                    elif not plugin:
+                        raise PermissionExemption(
+                            f"插件:{module} 数据不存在（缓存中也没有），"
+                            f"已跳过权限检查..."
+                        )
+                    elif not user:
+                        raise PermissionExemption(
+                            "用户数据不存在（缓存中也没有），已跳过权限检查..."
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"从缓存获取数据失败: {e}",
+                        LOGGER_COMMAND,
+                    )
+                    raise PermissionExemption(
+                        "获取插件和用户数据超时且缓存获取失败，请稍后再试..."
+                    )
+            else:
+                raise PermissionExemption("获取插件和用户数据超时，请稍后再试...")
     except IntegrityError:
         await asyncio.sleep(0.5)
         plugin_task = plugin_dao.safe_get_or_none(module=module)
@@ -176,13 +221,14 @@ async def get_plugin_and_user(
         raise PermissionExemption(
             f"插件: {plugin.name}:{plugin.module} 为HIDDEN，已跳过权限检查..."
         )
-    user = None
-    try:
-        user = await user_dao.get_by_func_or_none(
-            UserConsole.get_user, False, user_id=user_id
-        )
-    except IntegrityError as e:
-        raise PermissionExemption("重复创建用户，已跳过该次权限检查...") from e
+    # 如果user已经获取到了，就不需要再次查询
+    if user is None:
+        try:
+            user = await user_dao.get_by_func_or_none(
+                UserConsole.get_user, False, user_id=user_id
+            )
+        except IntegrityError as e:
+            raise PermissionExemption("重复创建用户，已跳过该次权限检查...") from e
     if not user:
         raise PermissionExemption("用户数据不存在，已跳过权限检查...")
     return plugin, user
@@ -328,20 +374,93 @@ async def auth(
         if not module:
             raise PermissionExemption("Matcher插件名称不存在...")
 
-        # 获取插件和用户数据
+        # 获取插件和用户数据（带重试和降级策略）
         plugin_user_start = time.time()
-        try:
-            plugin, user = await with_timeout(
-                get_plugin_and_user(module, entity.user_id), name="get_plugin_and_user"
-            )
-            hook_times["get_plugin_user"] = f"{time.time() - plugin_user_start:.3f}s"
-        except asyncio.TimeoutError:
-            logger.error(
-                f"获取插件和用户数据超时，模块: {module}",
-                LOGGER_COMMAND,
-                session=session,
-            )
-            raise PermissionExemption("获取插件和用户数据超时，请稍后再试...")
+        plugin = None
+        user = None
+        retry_count = 0
+
+        while retry_count <= MAX_RETRY_COUNT:
+            try:
+                plugin, user = await with_timeout(
+                    get_plugin_and_user(
+                        module, entity.user_id, use_cache_fallback=(retry_count > 0)
+                    ),
+                    timeout=FAST_RETRY_TIMEOUT if retry_count > 0 else TIMEOUT_SECONDS,
+                    name="get_plugin_and_user",
+                )
+                hook_times["get_plugin_user"] = (
+                    f"{time.time() - plugin_user_start:.3f}s"
+                )
+                if retry_count > 0:
+                    logger.info(
+                        f"重试成功获取插件和用户数据，模块: {module}, "
+                        f"重试次数: {retry_count}",
+                        LOGGER_COMMAND,
+                        session=session,
+                    )
+                break
+            except asyncio.TimeoutError:
+                retry_count += 1
+                if retry_count <= MAX_RETRY_COUNT:
+                    logger.warning(
+                        f"获取插件和用户数据超时，尝试重试 "
+                        f"({retry_count}/{MAX_RETRY_COUNT})，模块: {module}",
+                        LOGGER_COMMAND,
+                        session=session,
+                    )
+                    # 短暂等待后重试
+                    await asyncio.sleep(0.1 * retry_count)
+                else:
+                    logger.error(
+                        f"获取插件和用户数据超时，已重试 {MAX_RETRY_COUNT} 次，"
+                        f"模块: {module}",
+                        LOGGER_COMMAND,
+                        session=session,
+                    )
+                    # 最后一次尝试：使用缓存降级策略
+                    try:
+                        plugin, user = await get_plugin_and_user(
+                            module, entity.user_id, use_cache_fallback=True
+                        )
+                        hook_times["get_plugin_user"] = (
+                            f"{time.time() - plugin_user_start:.3f}s (缓存降级)"
+                        )
+                        logger.info(
+                            f"使用缓存降级策略成功获取数据，模块: {module}",
+                            LOGGER_COMMAND,
+                            session=session,
+                        )
+                        break
+                    except Exception as e:
+                        logger.error(
+                            f"缓存降级策略也失败: {e}，模块: {module}",
+                            LOGGER_COMMAND,
+                            session=session,
+                        )
+                        raise PermissionExemption(
+                            "获取插件和用户数据超时，请稍后再试..."
+                        )
+            except PermissionExemption:
+                # 如果是业务异常（如插件不存在），直接抛出
+                raise
+            except Exception as e:
+                logger.error(
+                    f"获取插件和用户数据时发生未知错误: {e}，模块: {module}",
+                    LOGGER_COMMAND,
+                    session=session,
+                )
+                if retry_count < MAX_RETRY_COUNT:
+                    retry_count += 1
+                    await asyncio.sleep(0.1 * retry_count)
+                else:
+                    raise PermissionExemption(
+                        f"获取插件和用户数据失败: {e}，请稍后再试..."
+                    )
+
+        # 确保plugin和user都已成功获取
+        if plugin is None or user is None:
+            raise PermissionExemption("获取插件和用户数据失败，请稍后再试...")
 
         # 进入 hooks 并行检查区域（会在高并发时排队）
         await _enter_hooks_section()
@@ -376,7 +495,7 @@ async def auth(
         # 并行执行所有 hook 检查，并记录执行时间
         hooks_start = time.time()
 
-        # 创建所有 hook 任务
+        # 创建所有 hook 任务（plugin和user已确保不为None）
         hook_tasks = [
             time_hook(auth_ban(matcher, bot, session, plugin), "auth_ban", hook_times),
             time_hook(auth_bot(plugin, bot.self_id), "auth_bot", hook_times),
@@ -387,7 +506,9 @@ async def auth(
             ),
             time_hook(auth_admin(plugin, session), "auth_admin", hook_times),
             time_hook(
-                auth_plugin(plugin, group, session, event), "auth_plugin", hook_times
+                auth_plugin(plugin, group, session, event),
+                "auth_plugin",
+                hook_times,
             ),
             time_hook(auth_limit(plugin, session), "auth_limit", hook_times),
         ]
