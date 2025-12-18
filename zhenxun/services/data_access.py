@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from zhenxun.services.cache import Cache, CacheRoot, cache_config
@@ -212,9 +213,13 @@ class DataAccess(Generic[T]):
         except Exception as e:
             logger.error(f"{self.model_cls.__name__} 从缓存获取数据失败: {kwargs}", e=e)
 
-        # 如果缓存中没有，从数据库获取
+        # 如果缓存中没有，从数据库获取（使用超时控制）
         logger.debug(f"{self.model_cls.__name__} 从数据库获取数据: {kwargs}")
-        data = await db_query_func(*args, **kwargs)
+        data = await with_db_timeout(
+            db_query_func(*args, **kwargs),
+            operation=f"{self.model_cls.__name__}.{db_query_func.__name__}",
+            source="DataAccess._get_with_cache",
+        )
 
         # 如果获取到数据，存入缓存
         if data:
@@ -222,31 +227,48 @@ class DataAccess(Generic[T]):
                 # 生成缓存键
                 cache_key = self._build_cache_key_for_item(data)
                 if cache_key is not None:
-                    # 存入缓存
-                    await self.cache.set(cache_key, data)
-                    self._cache_stats[self.cache_type]["sets"] += 1
-                    logger.debug(
-                        f"{self.model_cls.__name__} 数据已存入缓存: {cache_key}"
-                    )
+                    # 存入缓存（失败不影响主流程）
+                    try:
+                        # 使用较短的超时时间，避免阻塞
+                        await asyncio.wait_for(
+                            self.cache.set(cache_key, data), timeout=1.0
+                        )
+                        self._cache_stats[self.cache_type]["sets"] += 1
+                        logger.debug(
+                            f"{self.model_cls.__name__} 数据已存入缓存: {cache_key}"
+                        )
+                    except (asyncio.TimeoutError, Exception) as cache_err:
+                        # 缓存设置失败不影响数据返回，只记录警告
+                        logger.warning(
+                            f"{self.model_cls.__name__} 存入缓存失败（超时或异常），"
+                            f"参数: {kwargs}",
+                            e=cache_err,
+                        )
             except Exception as e:
                 logger.error(
                     f"{self.model_cls.__name__} 存入缓存失败，参数: {kwargs}", e=e
                 )
         elif cache_key is not None:
-            # 如果没有获取到数据，缓存空结果
+            # 如果没有获取到数据，缓存空结果（失败不影响主流程）
             try:
-                # 存入空结果缓存，使用较短的过期时间
-                await self.cache.set(
-                    cache_key, self._NULL_RESULT, expire=self._NULL_RESULT_TTL
+                # 存入空结果缓存，使用较短的过期时间和超时时间
+                await asyncio.wait_for(
+                    self.cache.set(
+                        cache_key, self._NULL_RESULT, expire=self._NULL_RESULT_TTL
+                    ),
+                    timeout=1.0,
                 )
                 self._cache_stats[self.cache_type]["null_sets"] += 1
                 logger.debug(
                     f"{self.model_cls.__name__} 空结果已存入缓存: {cache_key},"
                     f" TTL={self._NULL_RESULT_TTL}秒"
                 )
-            except Exception as e:
-                logger.error(
-                    f"{self.model_cls.__name__} 存入空结果缓存失败，参数: {kwargs}", e=e
+            except (asyncio.TimeoutError, Exception) as cache_err:
+                # 空结果缓存设置失败不影响数据返回，只记录警告
+                logger.warning(
+                    f"{self.model_cls.__name__} 存入空结果缓存失败（超时或异常），"
+                    f"参数: {kwargs}",
+                    e=cache_err,
                 )
 
         return data

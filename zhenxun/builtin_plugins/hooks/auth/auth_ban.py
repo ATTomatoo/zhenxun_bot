@@ -79,21 +79,37 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                 ban_dao.safe_get_or_none(user_id=user_id, group_id__isnull=True)
             )
 
-        # 等待所有查询完成，添加超时控制
+        # 等待所有查询完成，添加超时控制（使用更短的超时时间，快速失败）
         if tasks:
             try:
+                # 使用更短的超时时间（1.5秒），避免在高并发下等待太久
+                # 如果查询超时，视为未ban，允许继续执行
                 ban_records = await asyncio.wait_for(
-                    asyncio.gather(*tasks), timeout=DB_TIMEOUT_SECONDS
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=min(DB_TIMEOUT_SECONDS, 1.5),
                 )
+                # 处理可能的异常
+                valid_records = []
+                for record in ban_records:
+                    if isinstance(record, Exception):
+                        logger.warning(
+                            f"查询ban记录时出现异常: {record}",
+                            LOGGER_COMMAND,
+                        )
+                        continue
+                    valid_records.append(record)
+
                 if len(tasks) == 2:
-                    group_user, user = ban_records
+                    group_user = valid_records[0] if len(valid_records) > 0 else None
+                    user = valid_records[1] if len(valid_records) > 1 else None
                 elif user_id and group_id:
-                    group_user = ban_records[0]
+                    group_user = valid_records[0] if valid_records else None
                 else:
-                    user = ban_records[0]
+                    user = valid_records[0] if valid_records else None
             except asyncio.TimeoutError:
-                logger.error(
-                    f"查询ban记录超时: user_id={user_id}, group_id={group_id}",
+                logger.warning(
+                    f"查询ban记录超时（视为未ban）: "
+                    f"user_id={user_id}, group_id={group_id}",
                     LOGGER_COMMAND,
                 )
                 return 0

@@ -599,8 +599,6 @@ class CacheManager:
         返回:
             bool: 是否成功
         """
-        from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
-
         # 如果缓存被禁用或缓存模式为NONE，直接返回False
         if not self.enabled or cache_config.cache_mode == CacheMode.NONE:
             return False
@@ -615,14 +613,17 @@ class CacheManager:
             # 设置过期时间
             ttl = expire if expire is not None else model.expire
 
-            # 设置缓存
+            # 设置缓存（使用较短的超时时间，避免阻塞主流程）
             await asyncio.wait_for(
                 self.cache_backend.set(cache_key, serialized_value, ttl=ttl),  # type: ignore
-                timeout=DB_TIMEOUT_SECONDS,
+                timeout=min(CACHE_TIMEOUT, 2.0),  # 最多2秒，避免阻塞太久
             )
             return True
         except asyncio.TimeoutError:
-            logger.error(f"设置缓存 {cache_type}:{cache_key} 超时", LOG_COMMAND)
+            logger.warning(
+                f"设置缓存 {cache_type}:{cache_key} 超时（已跳过，不影响主流程）",
+                LOG_COMMAND,
+            )
             return False
         except Exception as e:
             logger.error(f"设置缓存 {cache_type} 失败", LOG_COMMAND, e=e)
