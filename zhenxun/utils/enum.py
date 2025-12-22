@@ -65,6 +65,8 @@ class CacheType(StrEnum):
     """用户权限"""
     LIMIT = "GLOBAL_LIMIT"
     """插件限制"""
+    TEMP = "TEMP"
+    """临时缓存"""
 
 
 class DbLockType(StrEnum):

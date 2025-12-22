@@ -3,6 +3,7 @@ from typing import cast
 import nonebot
 from nonebot.adapters import Bot
 from nonebot.plugin import PluginMetadata
+from tortoise.exceptions import IntegrityError
 
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.models.bot_console import BotConsole
@@ -72,9 +73,17 @@ async def init_bot_console(bot: Bot):
         list[str], await TaskInfo.filter(status=True).values_list("module", flat=True)
     )
     platform = PlatformUtils.get_platform(bot)
-    bot_data, created = await BotConsole.get_or_create(
-        bot_id=bot.self_id, platform=platform
-    )
+
+    try:
+        bot_data = await BotConsole.create(
+            bot_id=bot.self_id,
+            platform=platform,
+        )
+        created = True
+
+    except IntegrityError:
+        bot_data = await BotConsole.get(bot_id=bot.self_id)
+        created = False
 
     if not created:
         task_list = await _filter_blocked_items(

@@ -708,7 +708,7 @@ class CacheManager:
         if self._cache_backend:
             try:
                 await self._cache_backend.close()  # type: ignore
-            except (AttributeError, Exception) as e:
+            except Exception as e:
                 logger.warning(f"关闭缓存连接失败: {e}", LOG_COMMAND)
             self._cache_backend = None
 

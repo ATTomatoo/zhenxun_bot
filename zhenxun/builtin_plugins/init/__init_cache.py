@@ -33,7 +33,7 @@ def register_cache_types():
         CacheType.LEVEL, LevelUser, key_format="{user_id}_{group_id}"
     )
     CacheRegistry.register(CacheType.BAN, BanConsole, key_format="{user_id}_{group_id}")
-
+    CacheRegistry.register(CacheType.TEMP, None, 3600)
     if cache_config.cache_mode == CacheMode.NONE:
         logger.info("缓存功能已禁用，将直接从数据库获取数据")
     else:

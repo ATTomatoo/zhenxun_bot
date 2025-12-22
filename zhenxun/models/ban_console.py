@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import ClassVar
 from typing_extensions import Self
@@ -28,6 +29,7 @@ class BanConsole(Model):
     """ban时长"""
     operator = fields.CharField(255)
     """使用Ban命令的用户"""
+    _inflight: ClassVar[dict[tuple[str | None, str | None], asyncio.Future]] = {}
 
     class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "ban_console"
@@ -44,29 +46,38 @@ class BanConsole(Model):
 
     @classmethod
     async def _get_data(cls, user_id: str | None, group_id: str | None) -> Self | None:
-        """获取数据
-
-        参数:
-            user_id: 用户id
-            group_id: 群组id
-
-        异常:
-            UserAndGroupIsNone: 用户id和群组id都为空
-
-        返回:
-            Self | None: Self
-        """
         if not user_id and not group_id:
             raise UserAndGroupIsNone()
-        dao = DataAccess(cls)
-        if user_id:
-            return (
-                await dao.safe_get_or_none(user_id=user_id, group_id=group_id)
-                if group_id
-                else await dao.safe_get_or_none(user_id=user_id, group_id__isnull=True)
-            )
-        else:
-            return await dao.safe_get_or_none(user_id="", group_id=group_id)
+
+        key = (user_id, group_id)
+        future = cls._inflight.get(key)
+        if future:
+            return await future
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        cls._inflight[key] = future
+
+        try:
+            dao = DataAccess(cls)
+            if user_id:
+                result = (
+                    await dao.safe_get_or_none(user_id=user_id, group_id=group_id)
+                    if group_id
+                    else await dao.safe_get_or_none(
+                        user_id=user_id, group_id__isnull=True
+                    )
+                )
+            else:
+                result = await dao.safe_get_or_none(user_id="", group_id=group_id)
+
+            future.set_result(result)
+            return result
+        except Exception as e:
+            future.set_exception(e)
+            raise
+        finally:
+            cls._inflight.pop(key, None)
 
     @classmethod
     async def check_ban_level(
@@ -143,30 +154,21 @@ class BanConsole(Model):
         duration: int,
         operator: str | None = None,
     ):
-        """ban掉目标用户
-
-        参数:
-            user_id: 用户id
-            group_id: 群组id
-            ban_level: 使用命令者的权限等级
-            duration: 时长，分钟，-1时为永久
-            operator: 操作者id
-        """
         logger.debug(
             f"封禁用户/群组，等级:{ban_level}，时长: {duration}",
             target=f"{group_id}:{user_id}",
         )
-        target = await cls._get_data(user_id, group_id)
-        if target:
-            await cls.unban(user_id, group_id)
-        await cls.create(
+
+        await cls.update_or_create(
             user_id=user_id,
             group_id=group_id,
-            ban_level=ban_level,
-            ban_time=int(time.time()),
-            ban_reason=reason,
-            duration=duration,
-            operator=operator or 0,
+            defaults={
+                "ban_level": ban_level,
+                "ban_time": int(time.time()),
+                "ban_reason": reason,
+                "duration": duration,
+                "operator": operator or 0,
+            },
         )
 
     @classmethod

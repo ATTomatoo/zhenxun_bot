@@ -1,6 +1,8 @@
 from tortoise import fields
+from tortoise.exceptions import IntegrityError
 
 from zhenxun.models.goods_info import GoodsInfo
+from zhenxun.services.cache import CacheRoot
 from zhenxun.services.db_context import Model
 from zhenxun.utils.enum import CacheType, GoldHandle
 from zhenxun.utils.exception import GoodsNotFound, InsufficientGold
@@ -38,24 +40,23 @@ class UserConsole(Model):
 
     @classmethod
     async def get_user(cls, user_id: str, platform: str | None = None) -> "UserConsole":
-        """获取用户
+        if user := await cls.get_or_none(user_id=user_id):
+            return user
 
-        参数:
-            user_id: 用户id
-            platform: 平台.
-
-        返回:
-            UserConsole: UserConsole
-        """
-        if not await cls.exists(user_id=user_id):
-            await cls.create(
-                user_id=user_id, platform=platform, uid=await cls.get_new_uid()
+        try:
+            user, created = await cls.get_or_create(
+                user_id=user_id,
+                defaults={
+                    "platform": platform,
+                    "uid": 0,
+                },
             )
-        # user, _ = await UserConsole.get_or_create(
-        #     user_id=user_id,
-        #     defaults={"platform": platform, "uid": await cls.get_new_uid()},
-        # )
-        return await cls.get(user_id=user_id)
+            if created:
+                user.uid = await cls.get_new_uid()
+                await user.save(update_fields=["uid"])
+            return user
+        except IntegrityError:
+            return await cls.get(user_id=user_id)
 
     @classmethod
     async def get_new_uid(cls) -> int:
@@ -64,9 +65,18 @@ class UserConsole(Model):
         返回:
             int: 最新uid
         """
-        if user := await cls.annotate().order_by("-uid").first():
-            return user.uid + 1
-        return 1
+        uid: int | None = await CacheRoot.get(CacheType.TEMP, "USER_CONSOLE_UID")
+        if uid is None:
+            data: list[int] = (  # pyright: ignore[reportAssignmentType]
+                await cls.annotate()
+                .order_by("-uid")
+                .limit(1)
+                .values_list("uid", flat=True)
+            )
+            uid = data[0] if data else 0
+        uid = uid + 1
+        await CacheRoot.set(CacheType.TEMP, "USER_CONSOLE_UID", uid)
+        return uid
 
     @classmethod
     async def add_gold(
@@ -80,12 +90,14 @@ class UserConsole(Model):
             source: 来源
             platform: 平台.
         """
-        user, _ = await cls.get_or_create(
+        user, created = await cls.get_or_create(
             user_id=user_id,
-            defaults={"platform": platform, "uid": await cls.get_new_uid()},
+            defaults={"platform": platform, "uid": 0},
         )
+        if created:
+            user.uid = await cls.get_new_uid()
         user.gold += gold
-        await user.save(update_fields=["gold"])
+        await user.save(update_fields=["gold", "uid"])
         await UserGoldLog.create(
             user_id=user_id, gold=gold, handle=GoldHandle.GET, source=source
         )
@@ -111,14 +123,16 @@ class UserConsole(Model):
         异常:
             InsufficientGold: 金币不足
         """
-        user, _ = await cls.get_or_create(
+        user, created = await cls.get_or_create(
             user_id=user_id,
-            defaults={"platform": platform, "uid": await cls.get_new_uid()},
+            defaults={"platform": platform, "uid": 0},
         )
+        if created:
+            user.uid = await cls.get_new_uid()
         if user.gold < gold:
             raise InsufficientGold()
         user.gold -= gold
-        await user.save(update_fields=["gold"])
+        await user.save(update_fields=["gold", "uid"])
         await UserGoldLog.create(
             user_id=user_id, gold=gold, handle=handle, source=plugin_module
         )
@@ -135,14 +149,16 @@ class UserConsole(Model):
             num: 道具数量.
             platform: 平台.
         """
-        user, _ = await cls.get_or_create(
+        user, created = await cls.get_or_create(
             user_id=user_id,
-            defaults={"platform": platform, "uid": await cls.get_new_uid()},
+            defaults={"platform": platform, "uid": 0},
         )
+        if created:
+            user.uid = await cls.get_new_uid()
         if goods_uuid not in user.props:
             user.props[goods_uuid] = 0
         user.props[goods_uuid] += num
-        await user.save(update_fields=["props"])
+        await user.save(update_fields=["props", "uid"])
 
     @classmethod
     async def add_props_by_name(
@@ -172,17 +188,21 @@ class UserConsole(Model):
             num: 道具数量.
             platform: 平台.
         """
-        user, _ = await cls.get_or_create(
+        user, created = await cls.get_or_create(
             user_id=user_id,
-            defaults={"platform": platform, "uid": await cls.get_new_uid()},
+            defaults={"platform": platform, "uid": 0},
         )
+        if created:
+            user.uid = await cls.get_new_uid()
 
         if goods_uuid not in user.props or user.props[goods_uuid] < num:
+            if created:
+                await user.save(update_fields=["uid"])
             raise GoodsNotFound("未找到商品或道具数量不足...")
         user.props[goods_uuid] -= num
         if user.props[goods_uuid] <= 0:
             del user.props[goods_uuid]
-        await user.save(update_fields=["props"])
+        await user.save(update_fields=["props", "uid"])
 
     @classmethod
     async def use_props_by_name(
