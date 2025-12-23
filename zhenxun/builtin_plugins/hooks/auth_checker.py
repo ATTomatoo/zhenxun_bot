@@ -189,6 +189,8 @@ class AuthChecker:
 
         task_list = [item[1] for item in task_items]
 
+        start_ts = time.monotonic()
+
         try:
             results = await asyncio.wait_for(
                 asyncio.gather(*task_list), timeout=TIMEOUT_SECONDS
@@ -196,11 +198,22 @@ class AuthChecker:
         except asyncio.TimeoutError:
             # DataAccess 本身已经利用了 Redis / DB 缓存，这里整体超时直接视为失败，
             # 避免在 Redis 也不稳定时再叠加一层「从缓存再试一次」的复杂 fallback。
-            pending = [name for name, task in task_items if not task.done()]
-            finished = [name for name, task in task_items if task.done()]
+            elapsed = time.monotonic() - start_ts
+
+            def _describe(name: str, task: asyncio.Task) -> str:
+                if not task.done():
+                    return f"{name}=pending"
+                if task.cancelled():
+                    return f"{name}=cancelled"
+                exc = task.exception()
+                if exc:
+                    return f"{name}=error({exc})"
+                return f"{name}=ok"
+
+            states = [_describe(name, task) for name, task in task_items]
             timeout_msg = (
                 f"加载权限检查所需数据超时，模块: {module}，"
-                f"未完成: {pending}，已完成: {finished}"
+                f"耗时: {elapsed:.2f}s，状态: {states}"
             )
             logger.error(timeout_msg, LOGGER_COMMAND, session=session)
             for _, task in task_items:
