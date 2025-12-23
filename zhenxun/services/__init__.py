@@ -94,7 +94,6 @@ __all__ = [
 
 
 async def cancel_pending_tasks():
-    """仅取消 zhenxun 业务协程，避免干扰框架的关机流程。"""
     loop = asyncio.get_running_loop()
     current = asyncio.current_task(loop=loop)
     pending = []
