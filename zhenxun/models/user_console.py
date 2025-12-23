@@ -1,3 +1,6 @@
+import asyncio
+from typing import ClassVar
+
 from tortoise import fields
 from tortoise.exceptions import IntegrityError
 
@@ -37,20 +40,32 @@ class UserConsole(Model):
     """缓存类型"""
     cache_key_field = "user_id"
     """缓存键字段"""
+    _create_locks: ClassVar[dict[str, asyncio.Lock]] = {}
 
     @classmethod
     async def get_user(cls, user_id: str, platform: str | None = None) -> "UserConsole":
         if user := await cls.get_or_none(user_id=user_id):
             return user
 
-        try:
-            user = await cls.create(
-                user_id=user_id,
-                uid=await cls.get_new_uid(),
-                platform=platform,
-            )
-            return user
-        except IntegrityError:
+        lock = cls._create_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            # 双重检查，避免锁等待后重复创建
+            if user := await cls.get_or_none(user_id=user_id):
+                return user
+
+            for _ in range(3):
+                try:
+                    uid = await cls.get_new_uid()
+                    return await cls.create(
+                        user_id=user_id,
+                        uid=uid,
+                        platform=platform,
+                    )
+                except IntegrityError:
+                    # 可能是 uid 或 user_id 竞争，短暂等待再重试
+                    await asyncio.sleep(0.05)
+
+            # 多次重试仍失败，按 user_id 再查一遍兜底
             return await cls.get(user_id=user_id)
 
     @classmethod
