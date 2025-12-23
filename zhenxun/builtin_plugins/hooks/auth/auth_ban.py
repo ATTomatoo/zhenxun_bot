@@ -175,6 +175,8 @@ async def auth_ban(
                 results or DataAccess._NULL_RESULT,
             )
         else:
+            if results == DataAccess._NULL_RESULT:
+                return
             tmp_results: list[BanConsole] = []
             for r in results:
                 tmp_results.append(CacheRoot._deserialize_value(r, BanConsole))
