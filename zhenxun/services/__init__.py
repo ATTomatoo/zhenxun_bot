@@ -9,6 +9,9 @@ Zhenxun Bot - 核心服务模块
 - 定时任务调度器 (scheduler): 提供持久化的、可管理的定时任务服务。
 """
 
+import asyncio
+
+import nonebot
 from nonebot import require
 
 require("nonebot_plugin_apscheduler")
@@ -88,3 +91,26 @@ __all__ = [
     "set_global_default_model_name",
     "with_db_timeout",
 ]
+
+
+async def cancel_pending_tasks():
+    """在关闭前尽量取消仍在运行的协程，避免关闭后继续访问数据库连接池。"""
+    loop = asyncio.get_running_loop()
+    current = asyncio.current_task(loop=loop)
+    pending = [
+        task
+        for task in asyncio.all_tasks(loop)
+        if task is not current and not task.done()
+    ]
+    if not pending:
+        return
+
+    for task in pending:
+        task.cancel()
+
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
+driver = nonebot.get_driver()
+# 先取消可能在跑的任务，再断开数据库，避免 pool closing 异常
+driver.on_shutdown(cancel_pending_tasks)

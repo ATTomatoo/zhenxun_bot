@@ -73,7 +73,7 @@ class UserConsole(Model):
             uid = data[0] if data else 0
         uid = uid + 1
         await CacheRoot.set(CacheType.TEMP, "USER_CONSOLE_UID", uid)
-        return uid
+        return uid or 1
 
     @classmethod
     async def add_gold(
