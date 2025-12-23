@@ -154,30 +154,57 @@ class AuthChecker:
         plugin_dao = DataAccess(PluginInfo)
         group_dao = DataAccess(GroupConsole) if entity.group_id else None
 
-        tasks = {
-            "plugin": plugin_dao.safe_get_or_none(module=module),
-            "user": user_dao.get_by_func_or_none(
-                UserConsole.get_user, False, user_id=entity.user_id
+        # 为了更清晰地定位超时来源，创建具名 task
+        task_items = [
+            (
+                "plugin",
+                asyncio.create_task(
+                    plugin_dao.safe_get_or_none(module=module),
+                    name="authctx:plugin",
+                ),
             ),
-        }
+            (
+                "user",
+                asyncio.create_task(
+                    user_dao.get_by_func_or_none(
+                        UserConsole.get_user, False, user_id=entity.user_id
+                    ),
+                    name="authctx:user",
+                ),
+            ),
+        ]
 
         if entity.group_id and group_dao:
-            tasks["group"] = group_dao.safe_get_or_none(
-                group_id=entity.group_id, channel_id__isnull=True
+            task_items.append(
+                (
+                    "group",
+                    asyncio.create_task(
+                        group_dao.safe_get_or_none(
+                            group_id=entity.group_id, channel_id__isnull=True
+                        ),
+                        name="authctx:group",
+                    ),
+                )
             )
+
+        task_list = [item[1] for item in task_items]
 
         try:
             results = await asyncio.wait_for(
-                asyncio.gather(*tasks.values()), timeout=TIMEOUT_SECONDS
+                asyncio.gather(*task_list), timeout=TIMEOUT_SECONDS
             )
         except asyncio.TimeoutError:
             # DataAccess 本身已经利用了 Redis / DB 缓存，这里整体超时直接视为失败，
             # 避免在 Redis 也不稳定时再叠加一层「从缓存再试一次」的复杂 fallback。
-            logger.error(
-                f"加载权限检查所需数据超时，模块: {module}",
-                LOGGER_COMMAND,
-                session=session,
+            pending = [name for name, task in task_items if not task.done()]
+            finished = [name for name, task in task_items if task.done()]
+            timeout_msg = (
+                f"加载权限检查所需数据超时，模块: {module}，"
+                f"未完成: {pending}，已完成: {finished}"
             )
+            logger.error(timeout_msg, LOGGER_COMMAND, session=session)
+            for _, task in task_items:
+                task.cancel()
             raise PermissionExemption("获取权限检查所需数据超时，请稍后再试...")
         except IntegrityError:
             # 获取用户时可能因为 uid 竞争导致唯一约束冲突，稍作等待并重试多次
