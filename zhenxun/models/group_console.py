@@ -98,6 +98,10 @@ class GroupConsole(Model):
     """缓存键字段"""
     enable_lock: ClassVar[list[DbLockType]] = [DbLockType.CREATE, DbLockType.UPSERT]
     """开启锁"""
+    lock_fields: ClassVar[dict[DbLockType, tuple[str, str]]] = {
+        DbLockType.CREATE: ("group_id", "channel_id"),
+        DbLockType.UPSERT: ("group_id", "channel_id"),
+    }
 
     @classmethod
     async def _get_task_modules(cls, *, default_status: bool) -> list[str]:

@@ -44,6 +44,10 @@ class BanConsole(Model):
     """缓存键字段"""
     enable_lock: ClassVar[list[DbLockType]] = [DbLockType.CREATE, DbLockType.UPSERT]
     """开启锁"""
+    lock_fields: ClassVar[dict[DbLockType, tuple[str, str]]] = {
+        DbLockType.CREATE: ("user_id", "group_id"),
+        DbLockType.UPSERT: ("user_id", "group_id"),
+    }
 
     @classmethod
     async def _get_data(cls, user_id: str | None, group_id: str | None) -> Self | None:

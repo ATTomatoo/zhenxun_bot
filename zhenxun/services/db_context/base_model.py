@@ -87,7 +87,7 @@ class Model(TortoiseModel):
 
         cls_sem = cls.sem_data.setdefault(cls.__name__, {})
         # 是否配置了按字段的锁
-        lock_fields: dict[DbLockType, str] = getattr(cls, "lock_fields", {}) or {}
+        lock_fields: dict[DbLockType, Any] = getattr(cls, "lock_fields", {}) or {}
         if lock_type in lock_fields and lock_key is not None:
             keyed = cls_sem.setdefault(lock_type, {})
             if not isinstance(keyed, dict):
@@ -131,10 +131,14 @@ class Model(TortoiseModel):
         cls, using_db: BaseDBAsyncClient | None = None, **kwargs: Any
     ) -> Self:
         """创建数据（使用CREATE锁）"""
-        lock_fields: dict[DbLockType, str] = getattr(cls, "lock_fields", {}) or {}
+        lock_fields: dict[DbLockType, Any] = getattr(cls, "lock_fields", {}) or {}
         lock_key = None
         if field := lock_fields.get(DbLockType.CREATE):
-            lock_key = kwargs.get(field)
+            if isinstance(field, tuple):
+                key_tuple = tuple(kwargs.get(f) for f in field)
+                lock_key = key_tuple if any(v is not None for v in key_tuple) else None
+            else:
+                lock_key = kwargs.get(field)
 
         async with cls._lock_context(DbLockType.CREATE, lock_key):
             # 直接调用父类的_create方法避免触发save的锁
@@ -166,10 +170,14 @@ class Model(TortoiseModel):
         **kwargs: Any,
     ) -> tuple[Self, bool]:
         """更新或创建数据（使用UPSERT锁）"""
-        lock_fields: dict[DbLockType, str] = getattr(cls, "lock_fields", {}) or {}
+        lock_fields: dict[DbLockType, Any] = getattr(cls, "lock_fields", {}) or {}
         lock_key = None
         if field := lock_fields.get(DbLockType.UPSERT):
-            lock_key = kwargs.get(field)
+            if isinstance(field, tuple):
+                key_tuple = tuple(kwargs.get(f) for f in field)
+                lock_key = key_tuple if any(v is not None for v in key_tuple) else None
+            else:
+                lock_key = kwargs.get(field)
 
         async with cls._lock_context(DbLockType.UPSERT, lock_key):
             try:
