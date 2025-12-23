@@ -40,8 +40,11 @@ class UserConsole(Model):
 
     @classmethod
     async def get_user(cls, user_id: str, platform: str | None = None) -> "UserConsole":
+        if user := await cls.get_or_none(user_id=user_id):
+            return user
+
         try:
-            user, _ = await cls.get_or_create(
+            user = await cls.create(
                 user_id=user_id,
                 defaults={
                     "platform": platform,
