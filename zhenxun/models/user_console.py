@@ -44,20 +44,12 @@ class UserConsole(Model):
             return user
 
         try:
-            # 先生成 uid，再创建，避免插入 NULL/0 触碰约束
-            for _ in range(3):
-                try:
-                    uid = await cls.get_new_uid()
-                    return await cls.create(
-                        user_id=user_id,
-                        platform=platform,
-                        uid=uid,
-                    )
-                except IntegrityError:
-                    # 可能是 uid 或 user_id 竞争，重试几次
-                    continue
-            # 多次重试仍失败，按 user_id 再查一遍
-            return await cls.get(user_id=user_id)
+            user = await cls.create(
+                user_id=user_id,
+                uid=await cls.get_new_uid(),
+                platform=platform,
+            )
+            return user
         except IntegrityError:
             return await cls.get(user_id=user_id)
 
