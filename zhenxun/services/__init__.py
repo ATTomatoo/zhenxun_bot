@@ -94,14 +94,18 @@ __all__ = [
 
 
 async def cancel_pending_tasks():
-    """在关闭前尽量取消仍在运行的协程，避免关闭后继续访问数据库连接池。"""
+    """仅取消 zhenxun 业务协程，避免干扰框架的关机流程。"""
     loop = asyncio.get_running_loop()
     current = asyncio.current_task(loop=loop)
-    pending = [
-        task
-        for task in asyncio.all_tasks(loop)
-        if task is not current and not task.done()
-    ]
+    pending = []
+    for task in asyncio.all_tasks(loop):
+        if task is current or task.done():
+            continue
+        coro = task.get_coro()
+        module = getattr(coro, "__module__", "")
+        if module.startswith("zhenxun"):
+            pending.append(task)
+
     if not pending:
         return
 
