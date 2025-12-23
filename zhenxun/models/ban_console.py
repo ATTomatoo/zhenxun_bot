@@ -42,8 +42,6 @@ class BanConsole(Model):
     """缓存类型"""
     cache_key_field = ("user_id", "group_id")
     """缓存键字段"""
-    enable_lock: ClassVar[list[DbLockType]] = [DbLockType.CREATE, DbLockType.UPSERT]
-    """开启锁"""
     lock_fields: ClassVar[dict[DbLockType, tuple[str, str]]] = {
         DbLockType.CREATE: ("user_id", "group_id"),
         DbLockType.UPSERT: ("user_id", "group_id"),
