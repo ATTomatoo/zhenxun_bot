@@ -15,7 +15,7 @@ class UserConsole(Model):
     """自增id"""
     user_id = fields.CharField(255, unique=True, description="用户id")
     """用户id"""
-    uid = fields.IntField(description="UID", unique=True)
+    uid = fields.IntField(description="UID", unique=True, null=True)
     """UID"""
     gold = fields.IntField(default=100, description="金币数量")
     """金币数量"""
@@ -44,22 +44,14 @@ class UserConsole(Model):
             return user
 
         try:
-            # 先生成一个当前看起来不会冲突的 uid，再创建用户
-            # 如果并发下仍然发生冲突，捕获后重试 / 回退到查询
-            for _ in range(3):
-                uid = await cls.get_new_uid()
-                try:
-                    return await cls.create(
-                        user_id=user_id,
-                        platform=platform,
-                        uid=uid,
-                    )
-                except IntegrityError:
-                    # 可能是 uid 或 user_id 的唯一约束竞争，重试几次
-                    continue
-            # 如果多次重试仍失败，很可能是其它协程/进程已经成功创建
-            # 直接按 user_id 再查一遍
-            return await cls.get(user_id=user_id)
+            user = await cls.create(
+                user_id=user_id,
+                defaults={
+                    "platform": platform,
+                    "uid": await cls.get_new_uid(),
+                },
+            )
+            return user
         except IntegrityError:
             return await cls.get(user_id=user_id)
 
@@ -95,9 +87,9 @@ class UserConsole(Model):
             source: 来源
             platform: 平台.
         """
-        user = await cls.get_user(user_id=user_id, platform=platform)
+        user = await cls.get_user(user_id, platform)
         user.gold += gold
-        await user.save(update_fields=["gold", "uid"])
+        await user.save(update_fields=["gold"])
         await UserGoldLog.create(
             user_id=user_id, gold=gold, handle=GoldHandle.GET, source=source
         )
@@ -123,11 +115,11 @@ class UserConsole(Model):
         异常:
             InsufficientGold: 金币不足
         """
-        user = await cls.get_user(user_id=user_id, platform=platform)
+        user = await cls.get_user(user_id, platform)
         if user.gold < gold:
             raise InsufficientGold()
         user.gold -= gold
-        await user.save(update_fields=["gold", "uid"])
+        await user.save(update_fields=["gold"])
         await UserGoldLog.create(
             user_id=user_id, gold=gold, handle=handle, source=plugin_module
         )
@@ -144,11 +136,11 @@ class UserConsole(Model):
             num: 道具数量.
             platform: 平台.
         """
-        user = await cls.get_user(user_id=user_id, platform=platform)
+        user = await cls.get_user(user_id, platform)
         if goods_uuid not in user.props:
             user.props[goods_uuid] = 0
         user.props[goods_uuid] += num
-        await user.save(update_fields=["props", "uid"])
+        await user.save(update_fields=["props"])
 
     @classmethod
     async def add_props_by_name(
@@ -178,14 +170,13 @@ class UserConsole(Model):
             num: 道具数量.
             platform: 平台.
         """
-        user = await cls.get_user(user_id=user_id, platform=platform)
-
+        user = await cls.get_user(user_id, platform)
         if goods_uuid not in user.props or user.props[goods_uuid] < num:
             raise GoodsNotFound("未找到商品或道具数量不足...")
         user.props[goods_uuid] -= num
         if user.props[goods_uuid] <= 0:
             del user.props[goods_uuid]
-        await user.save(update_fields=["props", "uid"])
+        await user.save(update_fields=["props"])
 
     @classmethod
     async def use_props_by_name(
