@@ -7,6 +7,7 @@ Zhenxun Bot - 核心服务模块
 - LLM服务 (llm): 提供与大语言模型交互的统一API。
 - 插件生命周期管理 (plugin_init): 支持插件安装和卸载时的钩子函数。
 - 定时任务调度器 (scheduler): 提供持久化的、可管理的定时任务服务。
+- 页面模板服务 (page_template_service): 用于构建前端页面（表格、表单等）并处理数据提交。
 """
 
 from nonebot import require
@@ -44,6 +45,15 @@ from .llm import (
     set_global_default_model_name,
 )
 from .log import logger
+from .page_template import (
+    ColumnAlign,
+    FieldConfig,
+    FieldType,
+    PageTemplateConfig,
+    PageTemplateManager,
+    PageTemplateService,
+    template_manager,
+)
 from .plugin_init import PluginInit, PluginInitManager
 from .renderer import renderer_service
 from .scheduler import (
@@ -56,13 +66,19 @@ from .scheduler import (
 __all__ = [
     "AI",
     "AIConfig",
+    "ColumnAlign",
     "CommonOverrides",
     "ExecutionPolicy",
+    "FieldConfig",
+    "FieldType",
     "LLMContentPart",
     "LLMException",
     "LLMGenerationConfig",
     "LLMMessage",
     "Model",
+    "PageTemplateConfig",
+    "PageTemplateManager",
+    "PageTemplateService",
     "PluginInit",
     "PluginInitManager",
     "ScheduleContext",
@@ -86,5 +102,6 @@ __all__ = [
     "scheduler_manager",
     "search",
     "set_global_default_model_name",
+    "template_manager",
     "with_db_timeout",
 ]
