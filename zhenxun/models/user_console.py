@@ -15,7 +15,7 @@ class UserConsole(Model):
     """自增id"""
     user_id = fields.CharField(255, unique=True, description="用户id")
     """用户id"""
-    uid = fields.IntField(description="UID", unique=True, null=True)
+    uid = fields.IntField(description="UID", unique=True)
     """UID"""
     gold = fields.IntField(default=100, description="金币数量")
     """金币数量"""
@@ -44,14 +44,20 @@ class UserConsole(Model):
             return user
 
         try:
-            user = await cls.create(
-                user_id=user_id,
-                defaults={
-                    "platform": platform,
-                    "uid": await cls.get_new_uid(),
-                },
-            )
-            return user
+            # 先生成 uid，再创建，避免插入 NULL/0 触碰约束
+            for _ in range(3):
+                try:
+                    uid = await cls.get_new_uid()
+                    return await cls.create(
+                        user_id=user_id,
+                        platform=platform,
+                        uid=uid,
+                    )
+                except IntegrityError:
+                    # 可能是 uid 或 user_id 竞争，重试几次
+                    continue
+            # 多次重试仍失败，按 user_id 再查一遍
+            return await cls.get(user_id=user_id)
         except IntegrityError:
             return await cls.get(user_id=user_id)
 
