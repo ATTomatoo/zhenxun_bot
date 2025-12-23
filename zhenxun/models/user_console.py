@@ -15,7 +15,7 @@ class UserConsole(Model):
     """自增id"""
     user_id = fields.CharField(255, unique=True, description="用户id")
     """用户id"""
-    uid = fields.IntField(description="UID", unique=True)
+    uid = fields.IntField(description="UID", unique=True, null=True)
     """UID"""
     gold = fields.IntField(default=100, description="金币数量")
     """金币数量"""
@@ -48,7 +48,7 @@ class UserConsole(Model):
                 user_id=user_id,
                 defaults={
                     "platform": platform,
-                    "uid": 0,
+                    "uid": None,
                 },
             )
             if created:
@@ -92,7 +92,7 @@ class UserConsole(Model):
         """
         user, created = await cls.get_or_create(
             user_id=user_id,
-            defaults={"platform": platform, "uid": 0},
+            defaults={"platform": platform, "uid": None},
         )
         if created:
             user.uid = await cls.get_new_uid()
@@ -125,7 +125,7 @@ class UserConsole(Model):
         """
         user, created = await cls.get_or_create(
             user_id=user_id,
-            defaults={"platform": platform, "uid": 0},
+            defaults={"platform": platform, "uid": None},
         )
         if created:
             user.uid = await cls.get_new_uid()
@@ -151,7 +151,7 @@ class UserConsole(Model):
         """
         user, created = await cls.get_or_create(
             user_id=user_id,
-            defaults={"platform": platform, "uid": 0},
+            defaults={"platform": platform, "uid": None},
         )
         if created:
             user.uid = await cls.get_new_uid()
@@ -190,7 +190,7 @@ class UserConsole(Model):
         """
         user, created = await cls.get_or_create(
             user_id=user_id,
-            defaults={"platform": platform, "uid": 0},
+            defaults={"platform": platform, "uid": None},
         )
         if created:
             user.uid = await cls.get_new_uid()
