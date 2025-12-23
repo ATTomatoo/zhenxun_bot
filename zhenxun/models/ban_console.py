@@ -4,6 +4,7 @@ from typing import ClassVar
 from typing_extensions import Self
 
 from tortoise import fields
+from tortoise.expressions import Q
 
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.db_context import Model
@@ -61,16 +62,14 @@ class BanConsole(Model):
         try:
             dao = DataAccess(cls)
             if user_id:
-                result = (
-                    await dao.safe_get_or_none(user_id=user_id, group_id=group_id)
-                    if group_id
-                    else await dao.safe_get_or_none(
-                        user_id=user_id, group_id__isnull=True
-                    )
-                )
+                if group_id:
+                    q = Q(user_id=user_id) & Q(group_id=group_id)
+                else:
+                    q = Q(user_id=user_id) & Q(group_id__isnull=True)
             else:
-                result = await dao.safe_get_or_none(user_id="", group_id=group_id)
+                q = Q(user_id="") & Q(group_id=group_id)
 
+            result = await dao.safe_get_or_none(True, q)
             future.set_result(result)
             return result
         except Exception as e:
@@ -128,21 +127,57 @@ class BanConsole(Model):
         return 0
 
     @classmethod
-    async def is_ban(cls, user_id: str | None, group_id: str | None = None) -> bool:
+    async def is_ban(
+        cls, user_id: str | None, group_id: str | None = None
+    ) -> list[Self]:
         """判断用户是否被ban
 
         参数:
             user_id: 用户id
+            group_id: 群组id
 
         返回:
-            bool: 是否被ban
+            bool: list[Self] | None
         """
         logger.debug("检测是否被ban", target=f"{group_id}:{user_id}")
-        if await cls.check_ban_time(user_id, group_id):
-            return True
-        else:
-            await cls.unban(user_id, group_id)
-        return False
+
+        q_conditions = []
+
+        if user_id and group_id:
+            q_conditions.append(Q(user_id=user_id, group_id=group_id))
+        if user_id:
+            q_conditions.append(Q(user_id=user_id, group_id__isnull=True))
+        if group_id:
+            q_conditions.append(Q(group_id=group_id, user_id=""))
+
+        if not q_conditions:
+            return []
+
+        q = q_conditions[0]
+        for condition in q_conditions[1:]:
+            q |= condition
+
+        users = await cls.filter(q).all()
+        if not users:
+            return []
+
+        results = []
+        for user in users:
+            # 永久封禁视为一直处于封禁中
+            if user.duration == -1:
+                results.append(user)
+                continue
+
+            _time = time.time() - (user.ban_time + user.duration)
+            # 还在封禁期内
+            if _time < 0:
+                results.append(user)
+                continue
+
+            # 已过期，删除记录并标记为不满足「全部仍在封禁」条件
+            await user.delete()
+
+        return results
 
     @classmethod
     async def ban(
