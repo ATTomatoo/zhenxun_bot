@@ -182,6 +182,40 @@ class BanConsole(Model):
         return results
 
     @classmethod
+    async def is_ban_cached(
+        cls, user_id: str | None, group_id: str | None
+    ) -> list[Self]:
+        """带缓存的 ban 状态检查
+
+        参数:
+            user_id: 用户id
+            group_id: 群组id
+
+        返回:
+            list[Self]: ban记录列表，空列表表示未被ban
+        """
+        from zhenxun.services.cache import CacheRoot
+        from zhenxun.services.data_access import DataAccess
+        from zhenxun.utils.enum import CacheType
+
+        cache_key = f"{user_id}_{group_id}"
+
+        results = await CacheRoot.get(CacheType.BAN, cache_key)
+        if not results:
+            results = await cls.is_ban(user_id, group_id)
+            await CacheRoot.set(
+                CacheType.BAN,
+                cache_key,
+                results or DataAccess._NULL_RESULT,
+            )
+            return results
+
+        if results == DataAccess._NULL_RESULT:
+            return []
+
+        return [CacheRoot._deserialize_value(r, cls) for r in results]
+
+    @classmethod
     async def ban(
         cls,
         user_id: str | None,

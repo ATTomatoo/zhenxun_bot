@@ -18,7 +18,6 @@ from zhenxun.models.friend_user import FriendUser
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.services.log import logger
 from zhenxun.utils.exception import NotFindSuperuser
-from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.message import MessageUtils
 
 driver = nonebot.get_driver()
@@ -226,6 +225,8 @@ class PlatformUtils:
             user_id: 用户id
             platform: 平台
         """
+        from zhenxun.utils.http_utils import AsyncHttpx
+
         url = None
         if platform == "qq":
             if user_id.isdigit():

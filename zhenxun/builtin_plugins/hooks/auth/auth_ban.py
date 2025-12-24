@@ -9,11 +9,9 @@ from nonebot_plugin_uninfo import Uninfo
 from zhenxun.configs.config import Config
 from zhenxun.models.ban_console import BanConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.cache import CacheRoot
-from zhenxun.services.data_access import DataAccess
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
-from zhenxun.utils.enum import CacheType, PluginType
+from zhenxun.utils.enum import PluginType
 from zhenxun.utils.utils import EntityIDs, get_entity_ids
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD
@@ -164,23 +162,9 @@ async def auth_ban(
         if entity.user_id in bot.config.superusers:
             return
 
-        cache_key = f"{entity.user_id}_{entity.group_id}"
-
-        results = await CacheRoot.get(CacheType.BAN, cache_key)
+        results = await BanConsole.is_ban_cached(entity.user_id, entity.group_id)
         if not results:
-            results = await BanConsole.is_ban(entity.user_id, entity.group_id)
-            await CacheRoot.set(
-                CacheType.BAN,
-                cache_key,
-                results or DataAccess._NULL_RESULT,
-            )
-        else:
-            if results == DataAccess._NULL_RESULT:
-                return
-            tmp_results: list[BanConsole] = []
-            for r in results:
-                tmp_results.append(CacheRoot._deserialize_value(r, BanConsole))
-            results = tmp_results
+            return
 
         for result in results:
             if not result.user_id and result.group_id:

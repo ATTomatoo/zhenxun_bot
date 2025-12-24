@@ -9,6 +9,7 @@ from types import TracebackType
 from typing import Any, ClassVar
 
 import httpx
+from nonebot_plugin_session import EventSession, Session
 from nonebot_plugin_uninfo import Uninfo
 import pypinyin
 
@@ -209,7 +210,7 @@ def is_valid_date(date_text: str, separator: str = "-") -> bool:
         return False
 
 
-def get_entity_ids(session: Uninfo) -> EntityIDs:
+def get_entity_ids(session: Uninfo | EventSession) -> EntityIDs:
     """获取用户id，群组id，频道id
 
     参数:
@@ -218,16 +219,21 @@ def get_entity_ids(session: Uninfo) -> EntityIDs:
     返回:
         EntityIDs: 用户id，群组id，频道id
     """
-    user_id = session.user.id
-    group_id = None
-    channel_id = None
-    if session.group:
-        if session.group.parent:
-            group_id = session.group.parent.id
-            channel_id = session.group.id
-        else:
-            group_id = session.group.id
-    return EntityIDs(user_id=user_id, group_id=group_id, channel_id=channel_id)
+    if isinstance(session, Session):
+        user_id = session.id1
+        group_id = session.id2
+        channel_id = session.id3
+    else:
+        user_id = session.user.id
+        group_id = session.group.id if session.group else None
+        channel_id = session.channel.id if session.channel else None
+        if session.group:
+            if session.group.parent:
+                group_id = session.group.parent.id
+                channel_id = session.group.id
+            else:
+                group_id = session.group.id
+    return EntityIDs(user_id=user_id or "", group_id=group_id, channel_id=channel_id)
 
 
 def is_number(text: str) -> bool:

@@ -3,6 +3,7 @@ from io import BytesIO
 from pathlib import Path
 
 import nonebot
+from nonebot.adapters import Bot
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot_plugin_alconna import (
     At,
@@ -16,6 +17,7 @@ from nonebot_plugin_alconna import (
     Video,
     Voice,
 )
+from nonebot_plugin_uninfo import Uninfo
 from pydantic import BaseModel
 import ujson as json
 
@@ -104,22 +106,32 @@ class MessageUtils:
         cls,
         msg_list: MESSAGE_TYPE | list[MESSAGE_TYPE | list[MESSAGE_TYPE]],
         format_args: dict | None = None,
+        auto_forward_msg: Bot | Uninfo | None = None,
     ) -> UniMessage:
         """构造消息
 
         参数:
             msg_list: 消息列表
             format_args: 用于格式化字符串的参数字典.
+            auto_forward_msg: 是否自动转发消息
 
         返回:
             UniMessage: 构造完成的消息列表
         """
+        from zhenxun.utils.platform import PlatformUtils
+
         message_list = []
         if not isinstance(msg_list, list):
             msg_list = [msg_list]
         for m in msg_list:
             _data = m if isinstance(m, list) else [m]
             message_list += cls.__build_message(_data, format_args)
+        if auto_forward_msg and PlatformUtils.is_forward_merge_supported(
+            auto_forward_msg
+        ):
+            message_list = cls.alc_forward_msg(
+                message_list, auto_forward_msg.self_id, auto_forward_msg.self_id
+            )
         return UniMessage(message_list)
 
     @classmethod

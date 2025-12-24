@@ -8,9 +8,11 @@ from nonebot.adapters import Bot
 from nonebot.adapters.onebot.v11 import Bot as v11Bot
 from nonebot.adapters.onebot.v12 import Bot as v12Bot
 from nonebot_plugin_session import EventSession
+from nonebot_plugin_uninfo import Uninfo
 from ruamel.yaml.comments import CommentedSeq
 
 from zhenxun.services.log import logger
+from zhenxun.utils.utils import get_entity_ids
 
 
 class WithdrawManager:
@@ -18,7 +20,9 @@ class WithdrawManager:
     _index = 0
 
     @classmethod
-    def check(cls, session: EventSession, withdraw_time: tuple[int, int]) -> bool:
+    def check(
+        cls, session: Uninfo | EventSession, withdraw_time: tuple[int, int]
+    ) -> bool:
         """配置项检查
 
         参数:
@@ -28,12 +32,17 @@ class WithdrawManager:
         返回:
             bool: 是否允许撤回
         """
+        entity_ids = get_entity_ids(session)
         if withdraw_time[0] and withdraw_time[0] > 0:
             if withdraw_time[1] == 2:
                 return True
-            if withdraw_time[1] == 1 and (session.id2 or session.id3):
+            if withdraw_time[1] == 1 and entity_ids.group_id:
                 return True
-            if withdraw_time[1] == 0 and not session.id2 and not session.id3:
+            if (
+                withdraw_time[1] == 0
+                and not entity_ids.group_id
+                and not entity_ids.channel_id
+            ):
                 return True
         return False
 
