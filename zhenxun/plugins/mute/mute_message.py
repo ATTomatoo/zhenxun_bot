@@ -7,7 +7,6 @@ from nonebot_plugin_uninfo import Uninfo
 from zhenxun.configs.config import BotConfig
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.models.ban_console import BanConsole
-from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import PluginType
 from zhenxun.utils.image_utils import get_download_image_hash
@@ -19,8 +18,8 @@ from ._data_source import mute_manager
 
 __plugin_meta__ = PluginMetadata(
     name="刷屏监听",
-    description="",
-    usage="",
+    description="这是刷屏检测的监听器，用于检测用户是否在规定时间内发送了相同的消息",
+    usage="无",
     extra=PluginExtraData(
         author="HibiKier",
         version="0.1-473ecd8",
@@ -34,12 +33,9 @@ async def rule(session: Uninfo) -> bool:
     entity_ids = get_entity_ids(session)
     if not session.group:
         return False
-    ban_dao = DataAccess(BanConsole)
-    if not await ban_dao.safe_get_or_none(
-        user_id=entity_ids.user_id, group_id=entity_ids.group_id
-    ):
+    if mute_manager.get_group_data(entity_ids.group_id or "0").duration == 0:
         return False
-    if not await ban_dao.safe_get_or_none(user_id="", group_id=entity_ids.group_id):
+    if await BanConsole.is_ban_cached(entity_ids.user_id, entity_ids.group_id):
         return False
     return True
 

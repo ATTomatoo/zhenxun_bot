@@ -6,6 +6,7 @@ from typing_extensions import Self
 from tortoise import fields
 from tortoise.expressions import Q
 
+from zhenxun.services.cache import CacheRoot
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.db_context import Model
 from zhenxun.services.log import logger
@@ -194,10 +195,6 @@ class BanConsole(Model):
         返回:
             list[Self]: ban记录列表，空列表表示未被ban
         """
-        from zhenxun.services.cache import CacheRoot
-        from zhenxun.services.data_access import DataAccess
-        from zhenxun.utils.enum import CacheType
-
         cache_key = f"{user_id}_{group_id}"
 
         results = await CacheRoot.get(CacheType.BAN, cache_key)
