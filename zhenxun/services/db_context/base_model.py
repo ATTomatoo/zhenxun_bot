@@ -7,7 +7,6 @@ from typing_extensions import Self
 from tortoise.backends.base.client import BaseDBAsyncClient
 from tortoise.exceptions import IntegrityError, MultipleObjectsReturned
 from tortoise.models import Model as TortoiseModel
-from tortoise.transactions import in_transaction
 
 from zhenxun.services.cache import CacheRoot
 from zhenxun.services.log import logger
@@ -204,7 +203,7 @@ class Model(TortoiseModel):
         using_db: BaseDBAsyncClient | None = None,
         **kwargs: Any,
     ) -> tuple[Self, bool]:
-        """更新或创建数据（使用UPSERT锁）"""
+        """更新或创建数据（优化版本，减少锁等待）"""
         lock_fields: dict[DbLockType, Any] = getattr(cls, "lock_fields", {}) or {}
         lock_key = None
         if field := lock_fields.get(DbLockType.UPSERT):
@@ -216,21 +215,39 @@ class Model(TortoiseModel):
 
         async with cls._lock_context(DbLockType.UPSERT, lock_key):
             try:
-                # 先尝试更新（带行锁）
-                async with in_transaction():
-                    if obj := await cls.filter(**kwargs).select_for_update().first():
-                        await obj.update_from_dict(defaults or {})
-                        await obj.save()
-                        result = (obj, False)
-                    else:
-                        # 创建时不重复加锁
-                        result = await cls.create(**kwargs, **(defaults or {})), True
+                # 优化：先尝试无锁查询，大部分情况数据已存在
+                if obj := await cls.get_or_none(**kwargs):
+                    if defaults:
+                        await obj.update_from_dict(defaults)
+                        # 只更新指定字段，减少写操作
+                        await obj.save(update_fields=list(defaults.keys()))
+                    if cache_type := cls.get_cache_type():
+                        await CacheRoot.invalidate_cache(
+                            cache_type, cls.get_cache_key(obj)
+                        )
+                    return obj, False
 
-                if cache_type := cls.get_cache_type():
-                    await CacheRoot.invalidate_cache(
-                        cache_type, cls.get_cache_key(result[0])
+                # 数据不存在，尝试创建（依赖数据库唯一约束）
+                try:
+                    obj = await super().create(
+                        using_db=using_db, **kwargs, **(defaults or {})
                     )
-                return result
+                    if cache_type := cls.get_cache_type():
+                        await CacheRoot.invalidate_cache(
+                            cache_type, cls.get_cache_key(obj)
+                        )
+                    return obj, True
+                except IntegrityError:
+                    # 并发创建冲突，重新获取并更新
+                    obj = await cls.get(**kwargs)
+                    if defaults:
+                        await obj.update_from_dict(defaults)
+                        await obj.save(update_fields=list(defaults.keys()))
+                    if cache_type := cls.get_cache_type():
+                        await CacheRoot.invalidate_cache(
+                            cache_type, cls.get_cache_key(obj)
+                        )
+                    return obj, False
             except IntegrityError:
                 # 处理极端情况下的唯一约束冲突
                 obj = await cls.get(**kwargs)

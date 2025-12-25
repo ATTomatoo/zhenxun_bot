@@ -141,7 +141,7 @@ class BotProfileManager:
         """构建BOT自我介绍图片"""
         profile, service_count, call_count = await asyncio.gather(
             cls.get_bot_profile(bot_id),
-            UserConsole.get_new_uid(),
+            UserConsole.get_user_count(),
             Statistics.filter(bot_id=bot_id).count(),
         )
         if not profile:

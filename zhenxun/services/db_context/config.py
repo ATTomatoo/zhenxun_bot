@@ -3,7 +3,7 @@ from collections.abc import Callable
 from pydantic import BaseModel
 
 # 数据库操作超时设置（秒）
-DB_TIMEOUT_SECONDS = 3.0
+DB_TIMEOUT_SECONDS = 5.0
 
 # 性能监控阈值（秒）
 SLOW_QUERY_THRESHOLD = 0.5
