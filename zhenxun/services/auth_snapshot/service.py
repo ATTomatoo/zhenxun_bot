@@ -5,10 +5,10 @@
 """
 
 import asyncio
-import time
 from typing import ClassVar
 
 from zhenxun.services.cache import CacheRoot, cache_config
+from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.cache.config import CacheMode
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import CacheType
@@ -22,6 +22,12 @@ LOG_COMMAND = "auth_snapshot"
 AUTH_SNAPSHOT_PREFIX = "AUTH_SNAPSHOT"
 PLUGIN_SNAPSHOT_PREFIX = "PLUGIN_SNAPSHOT"
 
+# 内存缓存TTL配置
+AUTH_MEMORY_TTL = 10  # 权限快照内存缓存TTL（秒）
+AUTH_REDIS_TTL = 60  # 权限快照Redis缓存TTL（秒）
+PLUGIN_MEMORY_TTL = 30  # 插件快照内存缓存TTL（秒）
+PLUGIN_REDIS_TTL = 300  # 插件快照Redis缓存TTL（秒）
+
 
 class AuthSnapshotService:
     """权限快照服务
@@ -29,16 +35,25 @@ class AuthSnapshotService:
     提供权限快照的获取、缓存和失效管理
     """
 
-    # 本地内存缓存（用于热点数据）
-    _memory_cache: ClassVar[dict[str, tuple[float, AuthSnapshot]]] = {}
-    _memory_cache_ttl: ClassVar[int] = 10  # 内存缓存TTL（秒）
-    _cache_ttl: ClassVar[int] = 60  # Redis缓存TTL（秒）
+    # 本地内存缓存（使用 CacheDict，自动处理过期）
+    _memory_cache: ClassVar[CacheDict[AuthSnapshot] | None] = None
 
     # 正在构建中的快照（防止并发重复构建）
     _building: ClassVar[dict[str, asyncio.Future]] = {}
 
     # 构建锁（按 cache_key 粒度）
     _build_locks: ClassVar[dict[str, asyncio.Lock]] = {}
+
+    @classmethod
+    def _get_memory_cache(cls) -> CacheDict[AuthSnapshot]:
+        """获取内存缓存实例（懒加载）"""
+        if cls._memory_cache is None:
+            cls._memory_cache = CacheRoot.cache_dict(
+                f"{AUTH_SNAPSHOT_PREFIX}_MEMORY",
+                expire=AUTH_MEMORY_TTL,
+                value_type=AuthSnapshot,
+            )
+        return cls._memory_cache
 
     @classmethod
     def _build_cache_key(cls, user_id: str, group_id: str | None, bot_id: str) -> str:
@@ -69,9 +84,11 @@ class AuthSnapshotService:
         """
         cache_key = cls._build_cache_key(user_id, group_id, bot_id)
 
+        memory_cache = cls._get_memory_cache()
+
         # 1. 尝试从内存缓存获取
         if not force_refresh:
-            if snapshot := cls._get_from_memory(cache_key):
+            if snapshot := memory_cache.get(cache_key):
                 return snapshot
 
         # 2. 尝试从Redis获取
@@ -80,9 +97,9 @@ class AuthSnapshotService:
                 cached = await CacheRoot.get(CacheType.TEMP, cache_key)
                 if cached and isinstance(cached, dict):
                     snapshot = AuthSnapshot.model_validate(cached)
-                    if not snapshot.is_expired(cls._cache_ttl):
+                    if not snapshot.is_expired(AUTH_REDIS_TTL):
                         # 更新内存缓存
-                        cls._set_to_memory(cache_key, snapshot)
+                        memory_cache.set(cache_key, snapshot)
                         return snapshot
             except Exception as e:
                 logger.debug(f"从Redis获取权限快照失败: {cache_key}", LOG_COMMAND, e=e)
@@ -95,7 +112,7 @@ class AuthSnapshotService:
         # 4. 使用锁保护构建过程，防止并发重复构建
         async with lock:
             # 再次检查缓存（可能在等待锁的过程中已被其他协程构建）
-            if snapshot := cls._get_from_memory(cache_key):
+            if snapshot := memory_cache.get(cache_key):
                 return snapshot
 
             # 检查是否正在构建中（其他协程已开始构建）
@@ -107,38 +124,6 @@ class AuthSnapshotService:
 
             # 5. 构建新快照
             return await cls._build_and_cache(user_id, group_id, bot_id, cache_key)
-
-    @classmethod
-    def _get_from_memory(cls, cache_key: str) -> AuthSnapshot | None:
-        """从内存缓存获取"""
-        if cache_key in cls._memory_cache:
-            created_at, snapshot = cls._memory_cache[cache_key]
-            if time.time() - created_at < cls._memory_cache_ttl:
-                return snapshot
-            # 过期，删除
-            del cls._memory_cache[cache_key]
-        return None
-
-    @classmethod
-    def _set_to_memory(cls, cache_key: str, snapshot: AuthSnapshot):
-        """设置内存缓存"""
-        cls._memory_cache[cache_key] = (time.time(), snapshot)
-
-        # 清理过期的内存缓存（简单策略：超过1000条时清理）
-        if len(cls._memory_cache) > 1000:
-            cls._cleanup_memory_cache()
-
-    @classmethod
-    def _cleanup_memory_cache(cls):
-        """清理过期的内存缓存"""
-        now = time.time()
-        expired_keys = [
-            k
-            for k, (created_at, _) in cls._memory_cache.items()
-            if now - created_at > cls._memory_cache_ttl
-        ]
-        for key in expired_keys:
-            del cls._memory_cache[key]
 
     @classmethod
     async def _build_and_cache(
@@ -166,7 +151,7 @@ class AuthSnapshotService:
                 )
 
             # 存入内存缓存
-            cls._set_to_memory(cache_key, snapshot)
+            cls._get_memory_cache().set(cache_key, snapshot)
 
             future.set_result(snapshot)
             return snapshot
@@ -185,7 +170,7 @@ class AuthSnapshotService:
                 CacheType.TEMP,
                 cache_key,
                 snapshot.model_dump(),
-                expire=cls._cache_ttl,
+                expire=AUTH_REDIS_TTL,
             )
         except Exception as e:
             logger.debug(f"缓存权限快照到Redis失败: {cache_key}", LOG_COMMAND, e=e)
@@ -197,10 +182,11 @@ class AuthSnapshotService:
         参数:
             user_id: 用户ID
         """
-        # 清理内存缓存
-        keys_to_delete = [k for k in cls._memory_cache if f":{user_id}:" in k]
+        # 清理内存缓存（遍历 CacheDict 的 keys）
+        memory_cache = cls._get_memory_cache()
+        keys_to_delete = [k for k in memory_cache.keys() if f":{user_id}:" in k]
         for key in keys_to_delete:
-            del cls._memory_cache[key]
+            del memory_cache[key]
 
         logger.debug(f"已失效用户 {user_id} 的权限快照缓存", LOG_COMMAND)
 
@@ -212,9 +198,10 @@ class AuthSnapshotService:
             group_id: 群组ID
         """
         # 清理内存缓存
-        keys_to_delete = [k for k in cls._memory_cache if f":{group_id}:" in k]
+        memory_cache = cls._get_memory_cache()
+        keys_to_delete = [k for k in memory_cache.keys() if f":{group_id}:" in k]
         for key in keys_to_delete:
-            del cls._memory_cache[key]
+            del memory_cache[key]
 
         logger.debug(f"已失效群组 {group_id} 的权限快照缓存", LOG_COMMAND)
 
@@ -226,16 +213,18 @@ class AuthSnapshotService:
             bot_id: Bot ID
         """
         # 清理内存缓存
-        keys_to_delete = [k for k in cls._memory_cache if k.endswith(f":{bot_id}")]
+        memory_cache = cls._get_memory_cache()
+        keys_to_delete = [k for k in memory_cache.keys() if k.endswith(f":{bot_id}")]
         for key in keys_to_delete:
-            del cls._memory_cache[key]
+            del memory_cache[key]
 
         logger.debug(f"已失效Bot {bot_id} 的权限快照缓存", LOG_COMMAND)
 
     @classmethod
     def clear_all_cache(cls):
         """清空所有缓存"""
-        cls._memory_cache.clear()
+        if cls._memory_cache:
+            cls._memory_cache.clear()
         cls._build_locks.clear()
         logger.info("已清空所有权限快照缓存", LOG_COMMAND)
 
@@ -257,16 +246,25 @@ class PluginSnapshotService:
     提供插件信息的获取和缓存，支持本地内存缓存 + Redis 双层缓存
     """
 
-    # 本地内存缓存
-    _memory_cache: ClassVar[dict[str, tuple[float, PluginSnapshot]]] = {}
-    _memory_cache_ttl: ClassVar[int] = 30  # 内存缓存TTL（秒）
-    _cache_ttl: ClassVar[int] = 300  # Redis缓存TTL（秒）
+    # 本地内存缓存（使用 CacheDict）
+    _memory_cache: ClassVar[CacheDict[PluginSnapshot] | None] = None
 
     # 正在构建中的快照
     _building: ClassVar[dict[str, asyncio.Future]] = {}
 
     # 构建锁（按 cache_key 粒度）
     _build_locks: ClassVar[dict[str, asyncio.Lock]] = {}
+
+    @classmethod
+    def _get_memory_cache(cls) -> CacheDict[PluginSnapshot]:
+        """获取内存缓存实例（懒加载）"""
+        if cls._memory_cache is None:
+            cls._memory_cache = CacheRoot.cache_dict(
+                f"{PLUGIN_SNAPSHOT_PREFIX}_MEMORY",
+                expire=PLUGIN_MEMORY_TTL,
+                value_type=PluginSnapshot,
+            )
+        return cls._memory_cache
 
     @classmethod
     def _build_cache_key(cls, module: str) -> str:
@@ -287,10 +285,11 @@ class PluginSnapshotService:
             PluginSnapshot | None: 插件快照，不存在时返回None
         """
         cache_key = cls._build_cache_key(module)
+        memory_cache = cls._get_memory_cache()
 
         # 1. 尝试从内存缓存获取（最快）
         if not force_refresh:
-            if snapshot := cls._get_from_memory(cache_key):
+            if snapshot := memory_cache.get(cache_key):
                 return snapshot
 
         # 2. 尝试从Redis获取
@@ -299,8 +298,8 @@ class PluginSnapshotService:
                 cached = await CacheRoot.get(CacheType.PLUGINS, cache_key)
                 if cached and isinstance(cached, dict):
                     snapshot = PluginSnapshot.model_validate(cached)
-                    if not snapshot.is_expired(cls._cache_ttl):
-                        cls._set_to_memory(cache_key, snapshot)
+                    if not snapshot.is_expired(PLUGIN_REDIS_TTL):
+                        memory_cache.set(cache_key, snapshot)
                         return snapshot
             except Exception as e:
                 logger.debug(f"从Redis获取插件快照失败: {module}", LOG_COMMAND, e=e)
@@ -313,7 +312,7 @@ class PluginSnapshotService:
         # 4. 使用锁保护构建过程
         async with lock:
             # 再次检查缓存（可能在等待锁的过程中已被其他协程构建）
-            if snapshot := cls._get_from_memory(cache_key):
+            if snapshot := memory_cache.get(cache_key):
                 return snapshot
 
             # 检查是否正在构建中
@@ -325,21 +324,6 @@ class PluginSnapshotService:
 
             # 5. 从数据库构建
             return await cls._build_and_cache(module, cache_key)
-
-    @classmethod
-    def _get_from_memory(cls, cache_key: str) -> PluginSnapshot | None:
-        """从内存缓存获取"""
-        if cache_key in cls._memory_cache:
-            created_at, snapshot = cls._memory_cache[cache_key]
-            if time.time() - created_at < cls._memory_cache_ttl:
-                return snapshot
-            del cls._memory_cache[cache_key]
-        return None
-
-    @classmethod
-    def _set_to_memory(cls, cache_key: str, snapshot: PluginSnapshot):
-        """设置内存缓存"""
-        cls._memory_cache[cache_key] = (time.time(), snapshot)
 
     @classmethod
     async def _build_and_cache(
@@ -361,7 +345,7 @@ class PluginSnapshotService:
                     )
 
                 # 存入内存缓存
-                cls._set_to_memory(cache_key, snapshot)
+                cls._get_memory_cache().set(cache_key, snapshot)
 
             future.set_result(snapshot)
             return snapshot
@@ -380,7 +364,7 @@ class PluginSnapshotService:
                 CacheType.PLUGINS,
                 cache_key,
                 snapshot.model_dump(),
-                expire=cls._cache_ttl,
+                expire=PLUGIN_REDIS_TTL,
             )
         except Exception as e:
             logger.debug(f"缓存插件快照到Redis失败: {cache_key}", LOG_COMMAND, e=e)
@@ -395,8 +379,9 @@ class PluginSnapshotService:
         cache_key = cls._build_cache_key(module)
 
         # 清理内存缓存
-        if cache_key in cls._memory_cache:
-            del cls._memory_cache[cache_key]
+        memory_cache = cls._get_memory_cache()
+        if cache_key in memory_cache.keys():
+            del memory_cache[cache_key]
 
         # 清理Redis缓存
         if cache_config.cache_mode != CacheMode.NONE:
@@ -414,6 +399,8 @@ class PluginSnapshotService:
         在启动时调用，预加载所有插件信息到缓存
         """
         from zhenxun.models.plugin_info import PluginInfo
+
+        memory_cache = cls._get_memory_cache()
 
         try:
             plugins = await PluginInfo.filter(load_status=True).all()
@@ -434,7 +421,7 @@ class PluginSnapshotService:
                 )
 
                 cache_key = cls._build_cache_key(plugin.module)
-                cls._set_to_memory(cache_key, snapshot)
+                memory_cache.set(cache_key, snapshot)
                 count += 1
 
             logger.info(f"已预热 {count} 个插件的快照缓存", LOG_COMMAND)
@@ -445,7 +432,8 @@ class PluginSnapshotService:
     @classmethod
     def clear_all_cache(cls):
         """清空所有缓存"""
-        cls._memory_cache.clear()
+        if cls._memory_cache:
+            cls._memory_cache.clear()
         cls._build_locks.clear()
         logger.info("已清空所有插件快照缓存", LOG_COMMAND)
 
