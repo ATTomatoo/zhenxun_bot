@@ -67,6 +67,10 @@ class CacheType(StrEnum):
     """插件限制"""
     TEMP = "TEMP"
     """临时缓存"""
+    AUTH_SNAPSHOT = "AUTH_SNAPSHOT"
+    """权限快照（预聚合的用户+群组+Bot权限数据）"""
+    PLUGIN_SNAPSHOT = "PLUGIN_SNAPSHOT"
+    """插件快照（预聚合的插件配置数据）"""
 
 
 class DbLockType(StrEnum):
