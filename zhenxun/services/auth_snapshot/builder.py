@@ -2,31 +2,63 @@
 快照构建器
 
 负责从多个数据源聚合数据构建权限快照
+优化版：使用原始 SQL 减少查询次数
 """
 
-import asyncio
 import time
-from typing import Any
+from typing import Any, ClassVar
 
-from zhenxun.models.ban_console import BanConsole
+from tortoise import Tortoise
+
 from zhenxun.models.bot_console import BotConsole
 from zhenxun.models.group_console import GroupConsole
-from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.models.user_console import UserConsole
+from zhenxun.services.cache import CacheRoot
+from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.log import logger
 
 from .models import AuthSnapshot, PluginSnapshot
 
 LOG_COMMAND = "auth_snapshot"
-BUILD_TIMEOUT = 5.0  # 构建超时时间（秒）
+
+# 静态数据缓存 TTL（这些数据变化不频繁）
+BOT_CACHE_TTL = 300  # Bot 缓存 5 分钟
+GROUP_CACHE_TTL = 60  # Group 缓存 1 分钟
 
 
 class SnapshotBuilder:
-    """快照构建器
+    """快照构建器（优化版）
 
-    从多个数据源并行获取数据，聚合成权限快照
+    使用原始 SQL 减少查询次数：
+    - 1 次复合 SQL 获取用户相关数据（UserConsole + LevelUser + BanConsole）
+    - Bot/Group 使用内存缓存（变化不频繁）
+
+    最优情况：1 次 DB 查询
+    最差情况：3 次 DB 查询（用户数据 + Group + Bot 均未命中缓存）
     """
+
+    # Bot 信息缓存
+    _bot_cache: ClassVar[CacheDict[dict[str, Any]] | None] = None
+    # Group 信息缓存
+    _group_cache: ClassVar[CacheDict[dict[str, Any]] | None] = None
+
+    @classmethod
+    def _get_bot_cache(cls) -> CacheDict[dict[str, Any]]:
+        """获取 Bot 缓存"""
+        if cls._bot_cache is None:
+            cls._bot_cache = CacheRoot.cache_dict(
+                "SNAPSHOT_BOT_CACHE", expire=BOT_CACHE_TTL, value_type=dict
+            )
+        return cls._bot_cache
+
+    @classmethod
+    def _get_group_cache(cls) -> CacheDict[dict[str, Any]]:
+        """获取 Group 缓存"""
+        if cls._group_cache is None:
+            cls._group_cache = CacheRoot.cache_dict(
+                "SNAPSHOT_GROUP_CACHE", expire=GROUP_CACHE_TTL, value_type=dict
+            )
+        return cls._group_cache
 
     @classmethod
     async def build_auth_snapshot(
@@ -35,9 +67,9 @@ class SnapshotBuilder:
         group_id: str | None,
         bot_id: str,
     ) -> AuthSnapshot:
-        """构建权限快照
+        """构建权限快照（优化版）
 
-        并行获取所有需要的数据，聚合成一个快照对象
+        使用单条 SQL 获取用户相关数据，Bot/Group 使用内存缓存
 
         参数:
             user_id: 用户ID
@@ -50,53 +82,21 @@ class SnapshotBuilder:
         start_time = time.time()
 
         try:
-            # 创建所有查询任务
-            tasks: dict[str, asyncio.Task] = {}
+            # 1. 使用单条 SQL 获取用户相关数据
+            user_data = await cls._get_user_data_by_sql(user_id, group_id)
 
-            # 用户信息
-            tasks["user"] = asyncio.create_task(
-                cls._get_user(user_id), name="snapshot:user"
-            )
+            # 2. 获取 Bot 信息（优先缓存）
+            bot_data = await cls._get_bot_cached(bot_id)
 
-            # Ban状态（用户+群组）
-            tasks["ban"] = asyncio.create_task(
-                cls._get_ban_status(user_id, group_id), name="snapshot:ban"
-            )
-
-            # 用户权限等级（全局+群组）
-            tasks["level"] = asyncio.create_task(
-                cls._get_user_levels(user_id, group_id), name="snapshot:level"
-            )
-
-            # 群组信息（如果有）
+            # 3. 获取 Group 信息（优先缓存）
+            group_data = None
             if group_id:
-                tasks["group"] = asyncio.create_task(
-                    cls._get_group(group_id), name="snapshot:group"
-                )
+                group_data = await cls._get_group_cached(group_id)
 
-            # Bot信息
-            tasks["bot"] = asyncio.create_task(
-                cls._get_bot(bot_id), name="snapshot:bot"
+            # 4. 聚合结果
+            snapshot = cls._aggregate_sql_results(
+                user_id, group_id, bot_id, user_data, bot_data, group_data
             )
-
-            # 并行执行所有查询
-            results: dict[str, Any] = {}
-            try:
-                await asyncio.wait_for(
-                    cls._gather_results(tasks, results), timeout=BUILD_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"构建权限快照超时: user={user_id}, group={group_id}",
-                    LOG_COMMAND,
-                )
-                # 取消未完成的任务
-                for task in tasks.values():
-                    if not task.done():
-                        task.cancel()
-
-            # 聚合结果
-            snapshot = cls._aggregate_results(user_id, group_id, bot_id, results)
 
             elapsed = time.time() - start_time
             if elapsed > 0.5:
@@ -114,88 +114,79 @@ class SnapshotBuilder:
                 LOG_COMMAND,
                 e=e,
             )
-            # 返回一个默认快照
             return AuthSnapshot(user_id=user_id, group_id=group_id, bot_id=bot_id)
 
     @classmethod
-    async def _gather_results(
-        cls, tasks: dict[str, asyncio.Task], results: dict[str, Any]
-    ):
-        """收集所有任务结果
-
-        参数:
-            tasks: 任务字典
-            results: 结果字典（会被修改）
-        """
-        done, _ = await asyncio.wait(tasks.values(), return_when=asyncio.ALL_COMPLETED)
-
-        for name, task in tasks.items():
-            if task in done:
-                try:
-                    results[name] = task.result()
-                except Exception as e:
-                    logger.warning(f"获取 {name} 数据失败: {e}", LOG_COMMAND)
-                    results[name] = None
-
-    @classmethod
-    async def _get_user(cls, user_id: str) -> UserConsole | None:
-        """获取用户信息"""
-        try:
-            return await UserConsole.get_or_none(user_id=user_id)
-        except Exception as e:
-            logger.warning(f"获取用户信息失败: {user_id}", LOG_COMMAND, e=e)
-            return None
-
-    @classmethod
-    async def _get_ban_status(
+    async def _get_user_data_by_sql(
         cls, user_id: str, group_id: str | None
     ) -> dict[str, Any]:
-        """获取ban状态
+        """使用单条 SQL 获取用户相关数据
 
-        返回:
-            dict: {
-                "user_banned": int,  # 0/时间戳/-1
-                "user_ban_duration": int,
-                "group_banned": int
-            }
+        合并查询：UserConsole + LevelUser + BanConsole
         """
-        result = {
+        result: dict[str, Any] = {
+            "gold": 0,
+            "level_global": 0,
+            "level_group": 0,
             "user_banned": 0,
             "user_ban_duration": 0,
             "group_banned": 0,
         }
 
         try:
-            # 获取所有相关的ban记录
-            ban_records = await BanConsole.is_ban(user_id, group_id)
+            db = Tortoise.get_connection("default")
 
-            for record in ban_records:
-                if record.user_id and not record.group_id:
-                    # 用户级别的ban（全局）
-                    if record.duration == -1:
-                        result["user_banned"] = -1
-                        result["user_ban_duration"] = -1
-                    else:
-                        result["user_banned"] = int(record.ban_time + record.duration)
-                        result["user_ban_duration"] = record.duration
-                elif record.user_id and record.group_id:
-                    # 用户在特定群组的ban
-                    if record.duration == -1:
-                        result["user_banned"] = -1
-                        result["user_ban_duration"] = -1
-                    else:
-                        result["user_banned"] = int(record.ban_time + record.duration)
-                        result["user_ban_duration"] = record.duration
-                elif not record.user_id and record.group_id:
-                    # 群组级别的ban
-                    if record.duration == -1:
-                        result["group_banned"] = -1
-                    else:
-                        result["group_banned"] = int(record.ban_time + record.duration)
+            # 构建复合 SQL（使用子查询避免 JOIN 导致的数据缺失问题）
+            sql = cls._build_user_data_sql(user_id, group_id)
+            rows = await db.execute_query_dict(sql)
+
+            # 解析结果
+            for row in rows:
+                query_type = row.get("query_type")
+
+                if query_type == "user":
+                    result["gold"] = row.get("gold") or 0
+
+                elif query_type == "level_global":
+                    result["level_global"] = row.get("user_level") or 0
+
+                elif query_type == "level_group":
+                    result["level_group"] = row.get("user_level") or 0
+
+                elif query_type == "ban_user_global":
+                    duration = row.get("duration")
+                    ban_time = row.get("ban_time")
+                    if duration is not None:
+                        if duration == -1:
+                            result["user_banned"] = -1
+                            result["user_ban_duration"] = -1
+                        else:
+                            result["user_banned"] = int(ban_time + duration)
+                            result["user_ban_duration"] = duration
+
+                elif query_type == "ban_user_group":
+                    duration = row.get("duration")
+                    ban_time = row.get("ban_time")
+                    if duration is not None:
+                        if duration == -1:
+                            result["user_banned"] = -1
+                            result["user_ban_duration"] = -1
+                        else:
+                            result["user_banned"] = int(ban_time + duration)
+                            result["user_ban_duration"] = duration
+
+                elif query_type == "ban_group":
+                    duration = row.get("duration")
+                    ban_time = row.get("ban_time")
+                    if duration is not None:
+                        if duration == -1:
+                            result["group_banned"] = -1
+                        else:
+                            result["group_banned"] = int(ban_time + duration)
 
         except Exception as e:
             logger.warning(
-                f"获取ban状态失败: user={user_id}, group={group_id}",
+                f"SQL 查询用户数据失败: user={user_id}, group={group_id}",
                 LOG_COMMAND,
                 e=e,
             )
@@ -203,131 +194,191 @@ class SnapshotBuilder:
         return result
 
     @classmethod
-    async def _get_user_levels(
-        cls, user_id: str, group_id: str | None
-    ) -> dict[str, int]:
-        """获取用户权限等级
+    def _build_user_data_sql(cls, user_id: str, group_id: str | None) -> str:
+        """构建复合 SQL 语句
 
-        返回:
-            dict: {"global": int, "group": int}
+        使用 UNION ALL 合并多个查询，一次性获取所有用户相关数据
         """
-        result = {"global": 0, "group": 0}
+        # 转义用户输入防止 SQL 注入
+        safe_user_id = user_id.replace("'", "''")
+        safe_group_id = group_id.replace("'", "''") if group_id else None
 
-        try:
-            # 并行查询全局和群组权限
-            tasks = []
+        queries = []
 
-            # 全局权限
-            tasks.append(LevelUser.get_or_none(user_id=user_id, group_id__isnull=True))
+        # 1. 用户金币
+        queries.append(f"""
+            SELECT 'user' as query_type, gold, NULL as user_level,
+                   NULL as ban_time, NULL as duration
+            FROM user_console WHERE user_id = '{safe_user_id}'
+        """)
 
-            # 群组权限
-            if group_id:
-                tasks.append(LevelUser.get_or_none(user_id=user_id, group_id=group_id))
+        # 2. 全局权限等级
+        queries.append(f"""
+            SELECT 'level_global' as query_type, NULL as gold, user_level,
+                   NULL as ban_time, NULL as duration
+            FROM level_user WHERE user_id = '{safe_user_id}' AND group_id IS NULL
+        """)
 
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        # 3. 群组权限等级
+        if safe_group_id:
+            queries.append(f"""
+                SELECT 'level_group' as query_type, NULL as gold, user_level,
+                       NULL as ban_time, NULL as duration
+                FROM level_user
+                WHERE user_id = '{safe_user_id}' AND group_id = '{safe_group_id}'
+            """)
 
-            # 处理全局权限
-            if len(results) > 0 and isinstance(results[0], LevelUser):
-                result["global"] = results[0].user_level
+        # 4. 用户全局 ban
+        queries.append(f"""
+            SELECT 'ban_user_global' as query_type, NULL as gold, NULL as user_level,
+                   ban_time, duration
+            FROM ban_console
+            WHERE user_id = '{safe_user_id}' AND group_id IS NULL
+        """)
 
-            # 处理群组权限
-            if len(results) > 1 and isinstance(results[1], LevelUser):
-                result["group"] = results[1].user_level
+        # 5. 用户群组 ban
+        if safe_group_id:
+            queries.append(f"""
+                SELECT 'ban_user_group' as query_type, NULL as gold, NULL as user_level,
+                       ban_time, duration
+                FROM ban_console
+                WHERE user_id = '{safe_user_id}' AND group_id = '{safe_group_id}'
+            """)
 
-        except Exception as e:
-            logger.warning(
-                f"获取用户权限等级失败: user={user_id}, group={group_id}",
-                LOG_COMMAND,
-                e=e,
-            )
+            # 6. 群组 ban
+            queries.append(f"""
+                SELECT 'ban_group' as query_type, NULL as gold, NULL as user_level,
+                       ban_time, duration
+                FROM ban_console
+                WHERE user_id = '' AND group_id = '{safe_group_id}'
+            """)
 
-        return result
+        return " UNION ALL ".join(queries)
 
     @classmethod
-    async def _get_group(cls, group_id: str) -> GroupConsole | None:
-        """获取群组信息"""
+    async def _get_bot_cached(cls, bot_id: str) -> dict[str, Any] | None:
+        """获取 Bot 信息（带缓存）"""
+        cache = cls._get_bot_cache()
+
+        # 尝试从缓存获取
+        if cached := cache.get(bot_id):
+            return cached
+
+        # 缓存未命中，查询数据库
         try:
-            return await GroupConsole.get_or_none(
+            bot = await BotConsole.get_or_none(bot_id=bot_id)
+            if bot:
+                data = {
+                    "status": bot.status,
+                    "block_plugins": bot.block_plugins
+                    if hasattr(bot, "block_plugins")
+                    else None,
+                }
+                cache.set(bot_id, data)
+                return data
+        except Exception as e:
+            logger.warning(f"获取 Bot 信息失败: {bot_id}", LOG_COMMAND, e=e)
+
+        return None
+
+    @classmethod
+    async def _get_group_cached(cls, group_id: str) -> dict[str, Any] | None:
+        """获取 Group 信息（带缓存）"""
+        cache = cls._get_group_cache()
+
+        # 尝试从缓存获取
+        if cached := cache.get(group_id):
+            return cached
+
+        # 缓存未命中，查询数据库
+        try:
+            group = await GroupConsole.get_or_none(
                 group_id=group_id, channel_id__isnull=True
             )
+            if group:
+                data = {
+                    "status": group.status,
+                    "level": group.level,
+                    "is_super": group.is_super,
+                    "block_plugin": group.block_plugin,
+                    "superuser_block_plugin": group.superuser_block_plugin,
+                }
+                cache.set(group_id, data)
+                return data
         except Exception as e:
-            logger.warning(f"获取群组信息失败: {group_id}", LOG_COMMAND, e=e)
-            return None
+            logger.warning(f"获取 Group 信息失败: {group_id}", LOG_COMMAND, e=e)
+
+        return None
 
     @classmethod
-    async def _get_bot(cls, bot_id: str) -> BotConsole | None:
-        """获取Bot信息"""
-        try:
-            return await BotConsole.get_or_none(bot_id=bot_id)
-        except Exception as e:
-            logger.warning(f"获取Bot信息失败: {bot_id}", LOG_COMMAND, e=e)
-            return None
-
-    @classmethod
-    def _aggregate_results(
+    def _aggregate_sql_results(
         cls,
         user_id: str,
         group_id: str | None,
         bot_id: str,
-        results: dict[str, Any],
+        user_data: dict[str, Any],
+        bot_data: dict[str, Any] | None,
+        group_data: dict[str, Any] | None,
     ) -> AuthSnapshot:
-        """聚合查询结果为快照
-
-        参数:
-            user_id: 用户ID
-            group_id: 群组ID
-            bot_id: Bot ID
-            results: 查询结果字典
-
-        返回:
-            AuthSnapshot: 权限快照
-        """
+        """聚合 SQL 查询结果为快照"""
         snapshot = AuthSnapshot(
             user_id=user_id,
             group_id=group_id,
             bot_id=bot_id,
         )
 
-        # 用户信息
-        if user := results.get("user"):
-            snapshot.user_gold = user.gold
+        # 用户数据
+        snapshot.user_gold = user_data.get("gold", 0)
+        snapshot.user_level_global = user_data.get("level_global", 0)
+        snapshot.user_level_group = user_data.get("level_group", 0)
+        snapshot.user_banned = user_data.get("user_banned", 0)
+        snapshot.user_ban_duration = user_data.get("user_ban_duration", 0)
+        snapshot.group_banned = user_data.get("group_banned", 0)
 
-        # Ban状态
-        if ban_status := results.get("ban"):
-            snapshot.user_banned = ban_status.get("user_banned", 0)
-            snapshot.user_ban_duration = ban_status.get("user_ban_duration", 0)
-            snapshot.group_banned = ban_status.get("group_banned", 0)
-
-        # 用户权限等级
-        if levels := results.get("level"):
-            snapshot.user_level_global = levels.get("global", 0)
-            snapshot.user_level_group = levels.get("group", 0)
-
-        # 群组信息
-        if group := results.get("group"):
+        # Group 信息
+        if group_data:
             snapshot.group_exists = True
-            snapshot.group_status = group.status
-            snapshot.group_level = group.level
-            snapshot.group_is_super = group.is_super
-            snapshot.group_block_plugins = group.block_plugin or ""
-            snapshot.group_superuser_block_plugins = group.superuser_block_plugin or ""
+            snapshot.group_status = group_data.get("status", True)
+            snapshot.group_level = group_data.get("level", 5)
+            snapshot.group_is_super = group_data.get("is_super", False)
+            snapshot.group_block_plugins = group_data.get("block_plugin") or ""
+            snapshot.group_superuser_block_plugins = (
+                group_data.get("superuser_block_plugin") or ""
+            )
         elif group_id:
-            # 有 group_id 但没有群组数据，可能是新群
             snapshot.group_exists = False
 
-        # Bot信息
-        if bot := results.get("bot"):
-            snapshot.bot_status = bot.status
-            # BotConsole 的 block_plugins 是一个列表
-            if hasattr(bot, "block_plugins") and bot.block_plugins:
-                if isinstance(bot.block_plugins, list):
+        # Bot 信息
+        if bot_data:
+            snapshot.bot_status = bot_data.get("status", True)
+            block_plugins = bot_data.get("block_plugins")
+            if block_plugins:
+                if isinstance(block_plugins, list):
                     snapshot.bot_block_plugins = "".join(
-                        f"<{p}," for p in bot.block_plugins
+                        f"<{p}," for p in block_plugins
                     )
                 else:
-                    snapshot.bot_block_plugins = bot.block_plugins
+                    snapshot.bot_block_plugins = block_plugins
 
         return snapshot
+
+    @classmethod
+    def invalidate_bot_cache(cls, bot_id: str | None = None):
+        """失效 Bot 缓存"""
+        cache = cls._get_bot_cache()
+        if bot_id:
+            cache.delete(bot_id)
+        else:
+            cache.clear()
+
+    @classmethod
+    def invalidate_group_cache(cls, group_id: str | None = None):
+        """失效 Group 缓存"""
+        cache = cls._get_group_cache()
+        if group_id:
+            cache.delete(group_id)
+        else:
+            cache.clear()
 
     @classmethod
     async def build_plugin_snapshot(cls, module: str) -> PluginSnapshot | None:
