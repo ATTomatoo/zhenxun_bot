@@ -28,6 +28,10 @@ AUTH_REDIS_TTL = 60  # 权限快照Redis缓存TTL（秒）
 PLUGIN_MEMORY_TTL = 30  # 插件快照内存缓存TTL（秒）
 PLUGIN_REDIS_TTL = 300  # 插件快照Redis缓存TTL（秒）
 
+# 并发控制配置
+MAX_CONCURRENT_BUILDS = 50  # 最大同时构建数量（防止 DB 过载）
+BUILD_QUEUE_TIMEOUT = 3.0  # 等待构建队列的超时时间（秒）
+
 
 class AuthSnapshotService:
     """权限快照服务
@@ -43,6 +47,16 @@ class AuthSnapshotService:
 
     # 构建锁（按 cache_key 粒度）
     _build_locks: ClassVar[dict[str, asyncio.Lock]] = {}
+
+    # 全局构建并发限制（防止大量不同 key 同时构建导致 DB 过载）
+    _build_semaphore: ClassVar[asyncio.Semaphore | None] = None
+
+    @classmethod
+    def _get_build_semaphore(cls) -> asyncio.Semaphore:
+        """获取构建信号量（懒加载）"""
+        if cls._build_semaphore is None:
+            cls._build_semaphore = asyncio.Semaphore(MAX_CONCURRENT_BUILDS)
+        return cls._build_semaphore
 
     @classmethod
     def _get_memory_cache(cls) -> CacheDict[AuthSnapshot]:
@@ -133,28 +147,48 @@ class AuthSnapshotService:
         bot_id: str,
         cache_key: str,
     ) -> AuthSnapshot:
-        """构建并缓存快照"""
+        """构建并缓存快照（带全局并发限制）"""
         loop = asyncio.get_running_loop()
         future: asyncio.Future[AuthSnapshot] = loop.create_future()
         cls._building[cache_key] = future
 
-        try:
-            # 构建快照
-            snapshot = await SnapshotBuilder.build_auth_snapshot(
-                user_id, group_id, bot_id
-            )
+        semaphore = cls._get_build_semaphore()
 
-            # 存入Redis缓存（异步，不阻塞）
-            if cache_config.cache_mode != CacheMode.NONE:
-                asyncio.create_task(  # noqa: RUF006
-                    cls._cache_to_redis(cache_key, snapshot)
+        try:
+            # 尝试获取信号量（限制并发构建数量）
+            try:
+                await asyncio.wait_for(semaphore.acquire(), timeout=BUILD_QUEUE_TIMEOUT)
+            except asyncio.TimeoutError:
+                # 等待超时，返回默认快照（允许请求继续，但不保证权限数据完整）
+                logger.warning(
+                    f"构建快照等待超时（并发过高），使用默认快照: {cache_key}",
+                    LOG_COMMAND,
+                )
+                snapshot = AuthSnapshot(
+                    user_id=user_id, group_id=group_id, bot_id=bot_id
+                )
+                future.set_result(snapshot)
+                return snapshot
+
+            try:
+                # 构建快照
+                snapshot = await SnapshotBuilder.build_auth_snapshot(
+                    user_id, group_id, bot_id
                 )
 
-            # 存入内存缓存
-            cls._get_memory_cache().set(cache_key, snapshot)
+                # 存入Redis缓存（异步，不阻塞）
+                if cache_config.cache_mode != CacheMode.NONE:
+                    asyncio.create_task(  # noqa: RUF006
+                        cls._cache_to_redis(cache_key, snapshot)
+                    )
 
-            future.set_result(snapshot)
-            return snapshot
+                # 存入内存缓存
+                cls._get_memory_cache().set(cache_key, snapshot)
+
+                future.set_result(snapshot)
+                return snapshot
+            finally:
+                semaphore.release()
 
         except Exception as e:
             future.set_exception(e)
