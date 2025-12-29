@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-优化 `zhenxun_bot` 的权限检查系统，将每条消息的数据库/缓存查询次数从 **6-10次** 降低到 **1-2次**。
+优化 `zhenxun_bot` 的权限检查系统，将每条消息的数据库/缓存查询次数从 **6-10 次** 降低到 **1-2 次**。
 
 ---
 
@@ -12,15 +12,15 @@
 
 每条消息进入时，权限检查系统执行以下查询：
 
-| 阶段 | 查询内容 | 次数 |
-|-----|---------|------|
-| `_load_context` | PluginInfo, UserConsole, GroupConsole | 3次 |
-| `auth_ban` | BanConsole | 1-2次 |
-| `auth_bot` | BotConsole | 1次 |
-| `auth_admin` | LevelUser (全局+群组) | 1-2次 |
-| `auth_limit` | PluginLimit (如果不在内存) | 0-1次 |
+| 阶段            | 查询内容                              | 次数   |
+| --------------- | ------------------------------------- | ------ |
+| `_load_context` | PluginInfo, UserConsole, GroupConsole | 3 次   |
+| `auth_ban`      | BanConsole                            | 1-2 次 |
+| `auth_bot`      | BotConsole                            | 1 次   |
+| `auth_admin`    | LevelUser (全局+群组)                 | 1-2 次 |
+| `auth_limit`    | PluginLimit (如果不在内存)            | 0-1 次 |
 
-**总计：6-10次查询**
+**总计：6-10 次查询**
 
 ### 问题根源
 
@@ -49,11 +49,11 @@ Hash 结构:
     "user_gold": 100,                  # 用户金币
     "user_banned": 0,                  # 0=未ban, -1=永久ban, >0=ban结束时间戳
     "user_ban_duration": 0,            # ban时长（用于计算剩余时间）
-    
+
     # === 用户权限等级 ===
     "user_level_global": 0,            # 全局权限等级
     "user_level_group": 0,             # 群组权限等级
-    
+
     # === 群组信息 ===
     "group_status": 1,                 # 群组状态 (1=开启, 0=休眠)
     "group_level": 5,                  # 群组等级
@@ -61,11 +61,11 @@ Hash 结构:
     "group_block_plugins": "",         # 禁用插件列表 "<plugin1,<plugin2,"
     "group_superuser_block_plugins": "", # 超级用户禁用插件列表
     "group_banned": 0,                 # 群组是否被ban
-    
+
     # === Bot信息 ===
     "bot_status": 1,                   # Bot状态
     "bot_block_plugins": "",           # Bot禁用插件列表
-    
+
     # === 元数据 ===
     "version": 1,                      # 快照版本（用于失效判断）
     "created_at": 1703859600           # 创建时间戳
@@ -136,20 +136,20 @@ Hash 结构:
 
 #### 主动失效（事件驱动）
 
-| 事件 | 失效范围 |
-|-----|---------|
-| 用户金币变化 | `AUTH_SNAPSHOT:{user_id}:*:*` |
-| 用户被 ban/unban | `AUTH_SNAPSHOT:{user_id}:*:*` |
-| 群组设置变更 | `AUTH_SNAPSHOT:*:{group_id}:*` |
-| Bot 配置变更 | `AUTH_SNAPSHOT:*:*:{bot_id}` |
-| 插件配置变更 | `PLUGIN_SNAPSHOT:{module}` + 本地内存缓存 |
-| 用户权限变更 | `AUTH_SNAPSHOT:{user_id}:{group_id}:*` |
+| 事件             | 失效范围                                  |
+| ---------------- | ----------------------------------------- |
+| 用户金币变化     | `AUTH_SNAPSHOT:{user_id}:*:*`             |
+| 用户被 ban/unban | `AUTH_SNAPSHOT:{user_id}:*:*`             |
+| 群组设置变更     | `AUTH_SNAPSHOT:*:{group_id}:*`            |
+| Bot 配置变更     | `AUTH_SNAPSHOT:*:*:{bot_id}`              |
+| 插件配置变更     | `PLUGIN_SNAPSHOT:{module}` + 本地内存缓存 |
+| 用户权限变更     | `AUTH_SNAPSHOT:{user_id}:{group_id}:*`    |
 
 #### 被动失效（TTL）
 
-- 权限快照 TTL：**60秒**（权衡实时性和性能）
-- 插件快照 TTL：**300秒**（插件配置变化较少）
-- 本地内存缓存 TTL：**30秒**
+- 权限快照 TTL：**60 秒**（权衡实时性和性能）
+- 插件快照 TTL：**300 秒**（插件配置变化较少）
+- 本地内存缓存 TTL：**30 秒**
 
 ---
 
@@ -165,11 +165,12 @@ Hash 结构:
 ### Phase 2: 快照服务 ✅ [已完成]
 
 - [x] 创建 `AuthSnapshotService` 类
+
   - [x] `get_snapshot(user_id, group_id, bot_id)` - 获取权限快照
   - [x] `build_snapshot(user_id, group_id, bot_id)` - 构建权限快照
   - [x] `invalidate_user(user_id)` - 失效用户相关快照
   - [x] `invalidate_group(group_id)` - 失效群组相关快照
-  - [x] `invalidate_bot(bot_id)` - 失效Bot相关快照
+  - [x] `invalidate_bot(bot_id)` - 失效 Bot 相关快照
 
 - [x] 创建 `PluginSnapshotService` 类
   - [x] `get_plugin(module)` - 获取插件信息（本地缓存优先）
@@ -222,22 +223,22 @@ zhenxun/
 
 ## 性能预期
 
-| 指标 | 优化前 | 优化后 | 提升 |
-|-----|-------|-------|-----|
-| 查询次数 | 6-10次 | 1-2次 | 80%↓ |
-| 平均延迟 | ~50ms | ~10ms | 80%↓ |
-| Redis 连接压力 | 高 | 低 | 显著降低 |
+| 指标           | 优化前  | 优化后 | 提升     |
+| -------------- | ------- | ------ | -------- |
+| 查询次数       | 6-10 次 | 1-2 次 | 80%↓     |
+| 平均延迟       | ~50ms   | ~10ms  | 80%↓     |
+| Redis 连接压力 | 高      | 低     | 显著降低 |
 
 ---
 
 ## 风险与缓解
 
-| 风险 | 缓解措施 |
-|-----|---------|
-| 快照数据过期 | 合理的 TTL + 主动失效机制 |
+| 风险         | 缓解措施                        |
+| ------------ | ------------------------------- |
+| 快照数据过期 | 合理的 TTL + 主动失效机制       |
 | 快照构建延迟 | 异步构建 + 首次访问降级到旧流程 |
-| 内存占用增加 | 监控内存使用 + 合理的缓存清理 |
-| 数据一致性 | 写操作后立即失效缓存 |
+| 内存占用增加 | 监控内存使用 + 合理的缓存清理   |
+| 数据一致性   | 写操作后立即失效缓存            |
 
 ---
 
@@ -304,4 +305,3 @@ await PluginSnapshotService.invalidate_plugin("example_plugin")
 - 开始日期：2025-12-29
 - 当前阶段：核心功能已完成
 - 状态：✅ 基础功能完成，待测试验证
-

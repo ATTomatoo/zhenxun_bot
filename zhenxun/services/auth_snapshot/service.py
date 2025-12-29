@@ -37,6 +37,9 @@ class AuthSnapshotService:
     # 正在构建中的快照（防止并发重复构建）
     _building: ClassVar[dict[str, asyncio.Future]] = {}
 
+    # 构建锁（按 cache_key 粒度）
+    _build_locks: ClassVar[dict[str, asyncio.Lock]] = {}
+
     @classmethod
     def _build_cache_key(cls, user_id: str, group_id: str | None, bot_id: str) -> str:
         """构建缓存键"""
@@ -84,15 +87,26 @@ class AuthSnapshotService:
             except Exception as e:
                 logger.debug(f"从Redis获取权限快照失败: {cache_key}", LOG_COMMAND, e=e)
 
-        # 3. 检查是否正在构建中（防止并发）
-        if cache_key in cls._building:
-            try:
-                return await cls._building[cache_key]
-            except Exception:
-                pass
+        # 3. 获取或创建该 cache_key 的锁
+        if cache_key not in cls._build_locks:
+            cls._build_locks[cache_key] = asyncio.Lock()
+        lock = cls._build_locks[cache_key]
 
-        # 4. 构建新快照
-        return await cls._build_and_cache(user_id, group_id, bot_id, cache_key)
+        # 4. 使用锁保护构建过程，防止并发重复构建
+        async with lock:
+            # 再次检查缓存（可能在等待锁的过程中已被其他协程构建）
+            if snapshot := cls._get_from_memory(cache_key):
+                return snapshot
+
+            # 检查是否正在构建中（其他协程已开始构建）
+            if cache_key in cls._building:
+                try:
+                    return await cls._building[cache_key]
+                except Exception:
+                    pass
+
+            # 5. 构建新快照
+            return await cls._build_and_cache(user_id, group_id, bot_id, cache_key)
 
     @classmethod
     def _get_from_memory(cls, cache_key: str) -> AuthSnapshot | None:
@@ -222,7 +236,19 @@ class AuthSnapshotService:
     def clear_all_cache(cls):
         """清空所有缓存"""
         cls._memory_cache.clear()
+        cls._build_locks.clear()
         logger.info("已清空所有权限快照缓存", LOG_COMMAND)
+
+    @classmethod
+    def cleanup_locks(cls):
+        """清理未被使用的锁（可定期调用）"""
+        # 只保留正在使用的锁
+        active_keys = set(cls._building.keys())
+        keys_to_remove = [k for k in cls._build_locks if k not in active_keys]
+        for key in keys_to_remove:
+            lock = cls._build_locks.get(key)
+            if lock and not lock.locked():
+                del cls._build_locks[key]
 
 
 class PluginSnapshotService:
@@ -238,6 +264,9 @@ class PluginSnapshotService:
 
     # 正在构建中的快照
     _building: ClassVar[dict[str, asyncio.Future]] = {}
+
+    # 构建锁（按 cache_key 粒度）
+    _build_locks: ClassVar[dict[str, asyncio.Lock]] = {}
 
     @classmethod
     def _build_cache_key(cls, module: str) -> str:
@@ -276,15 +305,26 @@ class PluginSnapshotService:
             except Exception as e:
                 logger.debug(f"从Redis获取插件快照失败: {module}", LOG_COMMAND, e=e)
 
-        # 3. 检查是否正在构建中
-        if cache_key in cls._building:
-            try:
-                return await cls._building[cache_key]
-            except Exception:
-                pass
+        # 3. 获取或创建该 cache_key 的锁
+        if cache_key not in cls._build_locks:
+            cls._build_locks[cache_key] = asyncio.Lock()
+        lock = cls._build_locks[cache_key]
 
-        # 4. 从数据库构建
-        return await cls._build_and_cache(module, cache_key)
+        # 4. 使用锁保护构建过程
+        async with lock:
+            # 再次检查缓存（可能在等待锁的过程中已被其他协程构建）
+            if snapshot := cls._get_from_memory(cache_key):
+                return snapshot
+
+            # 检查是否正在构建中
+            if cache_key in cls._building:
+                try:
+                    return await cls._building[cache_key]
+                except Exception:
+                    pass
+
+            # 5. 从数据库构建
+            return await cls._build_and_cache(module, cache_key)
 
     @classmethod
     def _get_from_memory(cls, cache_key: str) -> PluginSnapshot | None:
@@ -406,4 +446,15 @@ class PluginSnapshotService:
     def clear_all_cache(cls):
         """清空所有缓存"""
         cls._memory_cache.clear()
+        cls._build_locks.clear()
         logger.info("已清空所有插件快照缓存", LOG_COMMAND)
+
+    @classmethod
+    def cleanup_locks(cls):
+        """清理未被使用的锁（可定期调用）"""
+        active_keys = set(cls._building.keys())
+        keys_to_remove = [k for k in cls._build_locks if k not in active_keys]
+        for key in keys_to_remove:
+            lock = cls._build_locks.get(key)
+            if lock and not lock.locked():
+                del cls._build_locks[key]
