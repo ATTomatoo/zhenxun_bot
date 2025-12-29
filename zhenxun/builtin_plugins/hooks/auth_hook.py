@@ -6,23 +6,25 @@ from nonebot.message import run_postprocessor, run_preprocessor
 from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_uninfo import Uninfo
 
+from zhenxun.services.auth_snapshot.checker import optimized_auth_checker
 from zhenxun.services.log import logger
 
 from .auth.config import LOGGER_COMMAND
-from .auth_checker import LimitManager, _auth_checker
+from .auth_checker import LimitManager
 
 
 # # 权限检测
 @run_preprocessor
 async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: UniMsg):
     start_time = time.time()
-    await _auth_checker.check(
-        matcher,
-        event,
-        bot,
-        session,
-        message,
-    )
+    # await _auth_checker.check(
+    #     matcher,
+    #     event,
+    #     bot,
+    #     session,
+    #     message,
+    # )
+    await optimized_auth_checker.check(matcher, event, bot, session, message)
     logger.debug(f"权限检测耗时：{time.time() - start_time}秒", LOGGER_COMMAND)
 
 

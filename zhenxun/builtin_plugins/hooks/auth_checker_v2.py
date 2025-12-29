@@ -16,17 +16,11 @@
 """
 
 import nonebot
-from nonebot.adapters import Bot, Event
-from nonebot.matcher import Matcher
-from nonebot.message import run_preprocessor
-from nonebot_plugin_alconna import UniMsg
-from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.services.auth_snapshot import (
     AuthSnapshotService,
     PluginSnapshotService,
 )
-from zhenxun.services.auth_snapshot.checker import optimized_auth_checker
 from zhenxun.services.log import logger
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 
@@ -49,19 +43,3 @@ async def _cleanup_cache():
     AuthSnapshotService.clear_all_cache()
     PluginSnapshotService.clear_all_cache()
     logger.info("快照缓存已清理", "auth_checker_v2")
-
-
-# 权限检查前处理器
-@run_preprocessor
-async def auth_check_v2(
-    matcher: Matcher,
-    event: Event,
-    bot: Bot,
-    session: Uninfo,
-    message: UniMsg,
-):
-    """优化后的权限检查
-
-    使用预聚合的权限快照进行检查，大幅减少数据库/缓存查询次数
-    """
-    await optimized_auth_checker.check(matcher, event, bot, session, message)
