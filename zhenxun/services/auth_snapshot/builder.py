@@ -232,6 +232,26 @@ class SnapshotBuilder:
             return "?"
 
     @classmethod
+    def _get_null_cast(cls, db_type: str, col_type: str) -> str:
+        """获取 NULL 的类型转换语法
+
+        参数:
+            db_type: 数据库类型
+            col_type: 目标列类型 (bigint, int, etc.)
+
+        返回:
+            str: 带类型转换的 NULL
+        """
+        if db_type == DB_TYPE_POSTGRES:
+            return f"NULL::{col_type}"
+        elif db_type == DB_TYPE_MYSQL:
+            # MySQL UNION 会自动推断类型，但显式转换更安全
+            return "CAST(NULL AS SIGNED)"
+        else:  # sqlite
+            # SQLite 是动态类型，NULL 不需要转换
+            return "NULL"
+
+    @classmethod
     def _build_user_data_sql(
         cls, user_id: str, group_id: str | None, db_type: str
     ) -> tuple[str, list[Any]]:
@@ -259,18 +279,22 @@ class SnapshotBuilder:
             param_idx += 1
             return placeholder
 
+        # 获取类型转换的 NULL（PostgreSQL 需要显式类型）
+        null_bigint = cls._get_null_cast(db_type, "bigint")
+        null_int = cls._get_null_cast(db_type, "integer")
+
         # 1. 用户金币
         queries.append(f"""
-            SELECT 'user' as query_type, gold, NULL as user_level,
-                   NULL as ban_time, NULL as duration
+            SELECT 'user' as query_type, gold, {null_int} as user_level,
+                   {null_bigint} as ban_time, {null_int} as duration
             FROM user_console WHERE user_id = {ph()}
         """)
         params.append(user_id)
 
         # 2. 全局权限等级
         queries.append(f"""
-            SELECT 'level_global' as query_type, NULL as gold, user_level,
-                   NULL as ban_time, NULL as duration
+            SELECT 'level_global' as query_type, {null_int} as gold, user_level,
+                   {null_bigint} as ban_time, {null_int} as duration
             FROM level_users WHERE user_id = {ph()} AND group_id IS NULL
         """)
         params.append(user_id)
@@ -278,8 +302,8 @@ class SnapshotBuilder:
         # 3. 群组权限等级
         if group_id:
             queries.append(f"""
-                SELECT 'level_group' as query_type, NULL as gold, user_level,
-                       NULL as ban_time, NULL as duration
+                SELECT 'level_group' as query_type, {null_int} as gold, user_level,
+                       {null_bigint} as ban_time, {null_int} as duration
                 FROM level_users
                 WHERE user_id = {ph()} AND group_id = {ph()}
             """)
@@ -287,7 +311,8 @@ class SnapshotBuilder:
 
         # 4. 用户全局 ban
         queries.append(f"""
-            SELECT 'ban_user_global' as query_type, NULL as gold, NULL as user_level,
+            SELECT 'ban_user_global' as query_type,
+                   {null_int} as gold, {null_int} as user_level,
                    ban_time, duration
             FROM ban_console
             WHERE user_id = {ph()} AND group_id IS NULL
@@ -297,7 +322,8 @@ class SnapshotBuilder:
         # 5. 用户群组 ban
         if group_id:
             queries.append(f"""
-                SELECT 'ban_user_group' as query_type, NULL as gold, NULL as user_level,
+                SELECT 'ban_user_group' as query_type,
+                       {null_int} as gold, {null_int} as user_level,
                        ban_time, duration
                 FROM ban_console
                 WHERE user_id = {ph()} AND group_id = {ph()}
@@ -306,7 +332,8 @@ class SnapshotBuilder:
 
             # 6. 群组 ban
             queries.append(f"""
-                SELECT 'ban_group' as query_type, NULL as gold, NULL as user_level,
+                SELECT 'ban_group' as query_type,
+                       {null_int} as gold, {null_int} as user_level,
                        ban_time, duration
                 FROM ban_console
                 WHERE user_id = {ph()} AND group_id = {ph()}
