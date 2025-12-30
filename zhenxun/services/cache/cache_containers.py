@@ -138,6 +138,15 @@ class CacheDict(Generic[T]):
 
         return data.value
 
+    def delete(self, key: str) -> None:
+        """删除字典项
+
+        参数:
+            key: 字典键
+        """
+        if key in self._data:
+            del self._data[key]
+
     def clear(self) -> None:
         """清空字典"""
         self._data.clear()

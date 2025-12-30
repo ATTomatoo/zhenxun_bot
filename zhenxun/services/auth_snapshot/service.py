@@ -18,9 +18,9 @@ from .models import AuthSnapshot, PluginSnapshot
 
 LOG_COMMAND = "auth_snapshot"
 
-# 缓存键前缀
-AUTH_SNAPSHOT_PREFIX = "AUTH_SNAPSHOT"
-PLUGIN_SNAPSHOT_PREFIX = "PLUGIN_SNAPSHOT"
+# 内存缓存名称（CacheType 已提供 Redis 前缀，此处仅用于内存缓存标识）
+AUTH_MEMORY_CACHE_NAME = "AUTH_MEMORY"
+PLUGIN_MEMORY_CACHE_NAME = "PLUGIN_MEMORY"
 
 # 内存缓存TTL配置
 AUTH_MEMORY_TTL = 10  # 权限快照内存缓存TTL（秒）
@@ -63,7 +63,7 @@ class AuthSnapshotService:
         """获取内存缓存实例（懒加载）"""
         if cls._memory_cache is None:
             cls._memory_cache = CacheRoot.cache_dict(
-                f"{AUTH_SNAPSHOT_PREFIX}_MEMORY",
+                AUTH_MEMORY_CACHE_NAME,
                 expire=AUTH_MEMORY_TTL,
                 value_type=AuthSnapshot,
             )
@@ -71,9 +71,9 @@ class AuthSnapshotService:
 
     @classmethod
     def _build_cache_key(cls, user_id: str, group_id: str | None, bot_id: str) -> str:
-        """构建缓存键"""
+        """构建缓存键（CacheType 已提供前缀，此处只需业务标识）"""
         group_part = group_id or "PRIVATE"
-        return f"{AUTH_SNAPSHOT_PREFIX}:{user_id}:{group_part}:{bot_id}"
+        return f"{user_id}:{group_part}:{bot_id}"
 
     @classmethod
     async def get_snapshot(
@@ -294,7 +294,7 @@ class PluginSnapshotService:
         """获取内存缓存实例（懒加载）"""
         if cls._memory_cache is None:
             cls._memory_cache = CacheRoot.cache_dict(
-                f"{PLUGIN_SNAPSHOT_PREFIX}_MEMORY",
+                PLUGIN_MEMORY_CACHE_NAME,
                 expire=PLUGIN_MEMORY_TTL,
                 value_type=PluginSnapshot,
             )
@@ -302,8 +302,8 @@ class PluginSnapshotService:
 
     @classmethod
     def _build_cache_key(cls, module: str) -> str:
-        """构建缓存键"""
-        return f"{PLUGIN_SNAPSHOT_PREFIX}:{module}"
+        """构建缓存键（CacheType 已提供前缀，此处只需模块名）"""
+        return module
 
     @classmethod
     async def get_plugin(
