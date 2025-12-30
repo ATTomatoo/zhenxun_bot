@@ -3,13 +3,13 @@ import time
 
 from zhenxun.models.bot_console import BotConsole
 from zhenxun.models.plugin_info import PluginInfo
+from zhenxun.services.auth_snapshot.exception import SkipPluginException
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
 from zhenxun.utils.common_utils import CommonUtils
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD
-from .exception import SkipPluginException
 
 
 async def auth_bot(plugin: PluginInfo, bot_id: str):

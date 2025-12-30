@@ -6,13 +6,16 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
+from zhenxun.services.auth_snapshot.exception import (
+    IsSuperuserException,
+    SkipPluginException,
+)
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
 from zhenxun.utils.common_utils import CommonUtils
 from zhenxun.utils.enum import BlockType
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD
-from .exception import IsSuperuserException, SkipPluginException
 from .utils import freq, is_poke, send_message
 
 

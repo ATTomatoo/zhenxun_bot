@@ -271,7 +271,7 @@ class SnapshotBuilder:
         queries.append(f"""
             SELECT 'level_global' as query_type, NULL as gold, user_level,
                    NULL as ban_time, NULL as duration
-            FROM level_user WHERE user_id = {ph()} AND group_id IS NULL
+            FROM level_users WHERE user_id = {ph()} AND group_id IS NULL
         """)
         params.append(user_id)
 
@@ -280,7 +280,7 @@ class SnapshotBuilder:
             queries.append(f"""
                 SELECT 'level_group' as query_type, NULL as gold, user_level,
                        NULL as ban_time, NULL as duration
-                FROM level_user
+                FROM level_users
                 WHERE user_id = {ph()} AND group_id = {ph()}
             """)
             params.extend([user_id, group_id])

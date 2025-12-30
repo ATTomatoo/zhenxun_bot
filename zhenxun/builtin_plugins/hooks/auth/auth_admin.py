@@ -6,13 +6,13 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
+from zhenxun.services.auth_snapshot.exception import SkipPluginException
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
 from zhenxun.utils.utils import get_entity_ids
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD
-from .exception import SkipPluginException
 from .utils import send_message
 
 

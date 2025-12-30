@@ -4,10 +4,10 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
+from zhenxun.services.auth_snapshot.exception import SkipPluginException
 from zhenxun.services.log import logger
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD
-from .exception import SkipPluginException
 from .utils import send_message
 
 

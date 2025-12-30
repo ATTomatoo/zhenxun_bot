@@ -4,10 +4,10 @@ from nonebot_plugin_alconna import UniMsg
 
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
+from zhenxun.services.auth_snapshot.exception import SkipPluginException
 from zhenxun.services.log import logger
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD, SwitchEnum
-from .exception import SkipPluginException
 
 
 async def auth_group(

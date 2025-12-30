@@ -1,16 +1,21 @@
 import time
 
 from nonebot.adapters import Bot, Event
+from nonebot.exception import IgnoredException
 from nonebot.matcher import Matcher
 from nonebot.message import run_postprocessor, run_preprocessor
 from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.services.auth_snapshot.checker import optimized_auth_checker
+from zhenxun.services.auth_snapshot.exception import (
+    PermissionExemption,
+    SkipPluginException,
+)
 from zhenxun.services.log import logger
 
+from .auth.auth_limit import LimitManager
 from .auth.config import LOGGER_COMMAND
-from .auth_checker import LimitManager
 
 
 # # 权限检测
@@ -24,7 +29,19 @@ async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: 
     #     session,
     #     message,
     # )
-    await optimized_auth_checker.check(matcher, event, bot, session, message)
+    try:
+        await optimized_auth_checker.check(matcher, event, bot, session, message)
+    except SkipPluginException as e:
+        logger.info(str(e), LOGGER_COMMAND, session=session)
+        raise IgnoredException(str(e))
+    except PermissionExemption as e:
+        logger.info(
+            str(e) or "超级用户跳过权限检测...", LOGGER_COMMAND, session=session
+        )
+        raise IgnoredException(str(e))
+    except Exception as e:
+        logger.error(f"权限检测异常: {e}", LOGGER_COMMAND, session=session, e=e)
+        raise SkipPluginException("权限检测异常") from e
     logger.debug(f"权限检测耗时：{time.time() - start_time}秒", LOGGER_COMMAND)
 
 

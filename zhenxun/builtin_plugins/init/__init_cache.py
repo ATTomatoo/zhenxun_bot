@@ -11,6 +11,7 @@ from zhenxun.models.group_plugin_setting import GroupPluginSetting
 from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
+from zhenxun.services.auth_snapshot import AuthSnapshot, PluginSnapshot
 from zhenxun.services.cache import CacheRegistry, cache_config
 from zhenxun.services.cache.config import CacheMode
 from zhenxun.services.log import logger
@@ -34,6 +35,9 @@ def register_cache_types():
     )
     CacheRegistry.register(CacheType.BAN, BanConsole, key_format="{user_id}_{group_id}")
     CacheRegistry.register(CacheType.TEMP, None, 3600)
+    CacheRegistry.register(CacheType.AUTH_SNAPSHOT, AuthSnapshot)
+    CacheRegistry.register(CacheType.PLUGIN_SNAPSHOT, PluginSnapshot)
+
     if cache_config.cache_mode == CacheMode.NONE:
         logger.info("缓存功能已禁用，将直接从数据库获取数据")
     else:

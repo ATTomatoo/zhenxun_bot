@@ -2,8 +2,7 @@ import nonebot
 from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.configs.config import Config
-
-from .exception import SkipPluginException
+from zhenxun.services.auth_snapshot.exception import SkipPluginException
 
 Config.add_plugin_config(
     "hook",

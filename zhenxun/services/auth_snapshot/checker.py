@@ -8,7 +8,6 @@ import asyncio
 import time
 
 from nonebot.adapters import Bot, Event
-from nonebot.exception import IgnoredException
 from nonebot.matcher import Matcher
 from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_uninfo import Uninfo
@@ -19,10 +18,11 @@ from zhenxun.utils.enum import BlockType, GoldHandle
 from zhenxun.utils.platform import PlatformUtils
 from zhenxun.utils.utils import get_entity_ids
 
+from .exception import IsSuperuserException, SkipPluginException
 from .models import AuthSnapshot, PluginSnapshot
 from .service import AuthSnapshotService, PluginSnapshotService
 
-LOG_COMMAND = "auth_checker_v2"
+LOG_COMMAND = "AuthSnapshotChecker"
 WARNING_THRESHOLD = 0.5  # 警告阈值（秒）
 
 
@@ -78,7 +78,7 @@ class OptimizedAuthChecker:
 
             if not module:
                 result.fail("Matcher插件名称不存在...")
-                raise IgnoredException(result.skip_reason)
+                raise SkipPluginException(result.skip_reason)
 
             # 2. 获取权限快照（第一次查询）
             snapshot_start = time.time()
@@ -96,12 +96,12 @@ class OptimizedAuthChecker:
 
             if not plugin_snapshot:
                 result.fail(f"插件:{module} 数据不存在...")
-                raise IgnoredException(result.skip_reason)
+                raise SkipPluginException(result.skip_reason)
 
             # 4. 检查是否为隐藏插件
             if plugin_snapshot.is_hidden():
                 result.fail(f"插件: {plugin_snapshot.name}:{module} 为HIDDEN...")
-                raise IgnoredException(result.skip_reason)
+                return
 
             # 5. 检查超级用户
             is_superuser = session.user.id in bot.config.superusers
@@ -122,7 +122,7 @@ class OptimizedAuthChecker:
             # 7. 处理检查结果
             if not result.passed:
                 logger.info(result.skip_reason, LOG_COMMAND, session=session)
-                raise IgnoredException(result.skip_reason)
+                raise SkipPluginException(result.skip_reason)
 
             # 8. 超级用户跳过后续限制
             if is_superuser:
@@ -162,12 +162,13 @@ class OptimizedAuthChecker:
                     logger.error(
                         f"扣除金币超时，模块: {module}", LOG_COMMAND, session=session
                     )
-
-        except IgnoredException:
+        except IsSuperuserException:
+            raise
+        except SkipPluginException:
             raise
         except Exception as e:
             logger.error(f"权限检查异常: {e}", LOG_COMMAND, session=session, e=e)
-            raise IgnoredException("权限检查异常") from e
+            raise SkipPluginException("权限检查异常") from e
         finally:
             # 记录总执行时间
             total_time = time.time() - start_time

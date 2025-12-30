@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.plugin_limit import PluginLimit
+from zhenxun.services.auth_snapshot.exception import SkipPluginException
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import LimitWatchType, PluginLimitType
@@ -18,7 +19,6 @@ from zhenxun.utils.time_utils import TimeUtils
 from zhenxun.utils.utils import get_entity_ids
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD
-from .exception import SkipPluginException
 
 driver = nonebot.get_driver()
 

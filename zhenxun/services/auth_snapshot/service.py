@@ -108,7 +108,7 @@ class AuthSnapshotService:
         # 2. 尝试从Redis获取
         if not force_refresh and cache_config.cache_mode != CacheMode.NONE:
             try:
-                cached = await CacheRoot.get(CacheType.TEMP, cache_key)
+                cached = await CacheRoot.get(CacheType.AUTH_SNAPSHOT, cache_key)
                 if cached and isinstance(cached, dict):
                     snapshot = AuthSnapshot.model_validate(cached)
                     if not snapshot.is_expired(AUTH_REDIS_TTL):
@@ -201,7 +201,7 @@ class AuthSnapshotService:
         """异步存入Redis"""
         try:
             await CacheRoot.set(
-                CacheType.TEMP,
+                CacheType.AUTH_SNAPSHOT,
                 cache_key,
                 snapshot.model_dump(),
                 expire=AUTH_REDIS_TTL,
@@ -329,7 +329,7 @@ class PluginSnapshotService:
         # 2. 尝试从Redis获取
         if not force_refresh and cache_config.cache_mode != CacheMode.NONE:
             try:
-                cached = await CacheRoot.get(CacheType.PLUGINS, cache_key)
+                cached = await CacheRoot.get(CacheType.PLUGIN_SNAPSHOT, cache_key)
                 if cached and isinstance(cached, dict):
                     snapshot = PluginSnapshot.model_validate(cached)
                     if not snapshot.is_expired(PLUGIN_REDIS_TTL):
@@ -395,7 +395,7 @@ class PluginSnapshotService:
         """异步存入Redis"""
         try:
             await CacheRoot.set(
-                CacheType.PLUGINS,
+                CacheType.PLUGIN_SNAPSHOT,
                 cache_key,
                 snapshot.model_dump(),
                 expire=PLUGIN_REDIS_TTL,
@@ -420,7 +420,7 @@ class PluginSnapshotService:
         # 清理Redis缓存
         if cache_config.cache_mode != CacheMode.NONE:
             try:
-                await CacheRoot.delete(CacheType.PLUGINS, cache_key)
+                await CacheRoot.delete(CacheType.PLUGIN_SNAPSHOT, cache_key)
             except Exception:
                 pass
 
