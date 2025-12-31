@@ -124,21 +124,6 @@ class OptimizedAuthChecker:
                 logger.info(result.skip_reason, LOG_COMMAND, session=session)
                 raise SkipPluginException(result.skip_reason)
 
-            # 8. 超级用户跳过后续限制
-            if is_superuser:
-                if plugin_snapshot.is_superuser_plugin():
-                    logger.debug(
-                        "超级用户访问超级用户插件，跳过权限检测...",
-                        LOG_COMMAND,
-                        session=session,
-                    )
-                    return
-                if not plugin_snapshot.limit_superuser:
-                    logger.debug(
-                        "超级用户跳过权限检测...", LOG_COMMAND, session=session
-                    )
-                    return
-
             # 9. 扣除金币（如果需要）
             if result.cost_gold > 0:
                 try:
@@ -193,6 +178,8 @@ class OptimizedAuthChecker:
 
         所有检查都基于内存中的快照数据，无I/O操作
         """
+        if is_superuser:
+            return
         # 1. Ban检查（关键优先级）
         self._check_ban(result, auth_snapshot, plugin_snapshot, is_superuser)
         if not result.passed:
@@ -305,7 +292,7 @@ class OptimizedAuthChecker:
 
         # 群组休眠状态（除非是开启命令）
         text = message.extract_plain_text().strip()
-        if text != "开启" and not auth_snapshot.group_status:
+        if text != "醒来" and not auth_snapshot.group_status:
             result.fail("群组休眠状态...")
             return
 
