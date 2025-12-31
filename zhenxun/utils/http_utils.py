@@ -64,7 +64,7 @@ async def _():
     _client = get_async_client(
         headers=get_user_agent(),
         follow_redirects=True,
-        limits=httpx.Limits(max_connections=200, max_keepalive_connections=100),
+        limits=httpx.Limits(max_connections=500, max_keepalive_connections=200),
         timeout=httpx.Timeout(10),
         **client_kwargs,
     )

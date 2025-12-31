@@ -425,7 +425,7 @@ class PluginSnapshotService:
                         await CacheRoot.set(
                             CacheType.PLUGIN_SNAPSHOT,
                             cache_key,
-                            snapshot.model_dump(),
+                            snapshot,
                             expire=PLUGIN_REDIS_TTL,
                         )
                     except Exception:
