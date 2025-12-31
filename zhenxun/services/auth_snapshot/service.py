@@ -29,8 +29,8 @@ PLUGIN_MEMORY_TTL = 30  # 插件快照内存缓存TTL（秒）
 PLUGIN_REDIS_TTL = 300  # 插件快照Redis缓存TTL（秒）
 
 # 并发控制配置
-MAX_CONCURRENT_BUILDS = 50  # 最大同时构建数量（防止 DB 过载）
-BUILD_QUEUE_TIMEOUT = 3.0  # 等待构建队列的超时时间（秒）
+MAX_CONCURRENT_BUILDS = 15  # 最大同时构建数量（防止 DB 过载）
+BUILD_QUEUE_TIMEOUT = 5.0  # 等待构建队列的超时时间（秒）
 
 
 class AuthSnapshotService:
@@ -44,6 +44,9 @@ class AuthSnapshotService:
 
     # 正在构建中的快照（防止并发重复构建）
     _building: ClassVar[dict[str, asyncio.Future]] = {}
+
+    # per-key 锁（保护 _building 的检查和设置，防止竞态条件）
+    _build_locks: ClassVar[dict[str, asyncio.Lock]] = {}
 
     # 全局构建并发限制（防止大量不同 key 同时构建导致 DB 过载）
     _build_semaphore: ClassVar[asyncio.Semaphore | None] = None
@@ -114,14 +117,19 @@ class AuthSnapshotService:
             except Exception as e:
                 logger.debug(f"从Redis获取快照失败: {cache_key}", LOG_COMMAND, e=e)
 
-        # 3. 检查是否有其他协程正在构建（无需持锁）
+        # 3. 获取或创建 per-key 锁
+        if cache_key not in cls._build_locks:
+            cls._build_locks[cache_key] = asyncio.Lock()
+        lock = cls._build_locks[cache_key]
+
+        # 4. 先尝试快速路径：检查是否有其他协程正在构建
         if cache_key in cls._building:
             try:
                 return await cls._building[cache_key]
             except Exception:
                 pass
 
-        # 4. 需要构建 - 先获取信号量（不在锁内等待）
+        # 5. 获取信号量（控制总并发数，不在锁内等待）
         semaphore = cls._get_build_semaphore()
         try:
             await asyncio.wait_for(semaphore.acquire(), timeout=BUILD_QUEUE_TIMEOUT)
@@ -130,18 +138,22 @@ class AuthSnapshotService:
             return AuthSnapshot(user_id=user_id, group_id=group_id, bot_id=bot_id)
 
         try:
-            # 5. 获取信号量后，再次检查缓存和构建状态
-            if snapshot := memory_cache.get(cache_key):
-                return snapshot
+            # 6. 获取 per-key 锁，保护 _building 的检查和设置
+            async with lock:
+                # 再次检查缓存
+                if snapshot := memory_cache.get(cache_key):
+                    return snapshot
 
-            if cache_key in cls._building:
-                try:
-                    return await cls._building[cache_key]
-                except Exception:
-                    pass
+                # 检查是否有其他协程正在构建
+                if cache_key in cls._building:
+                    future = cls._building[cache_key]
+                    # 释放锁后等待 future
+                else:
+                    # 在锁内开始构建（_do_build 会立即设置 _building）
+                    return await cls._do_build(user_id, group_id, bot_id, cache_key)
 
-            # 6. 真正开始构建
-            return await cls._do_build(user_id, group_id, bot_id, cache_key)
+            # 锁外等待 future
+            return await future
         finally:
             semaphore.release()
 
@@ -246,6 +258,7 @@ class AuthSnapshotService:
         if cls._memory_cache:
             cls._memory_cache.clear()
         cls._building.clear()
+        cls._build_locks.clear()
         logger.info("已清空所有权限快照缓存", LOG_COMMAND)
 
 
