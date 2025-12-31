@@ -390,6 +390,7 @@ class PluginSnapshotService:
         """预热所有插件缓存
 
         在启动时调用，预加载所有插件信息到缓存
+        同时写入内存缓存和 Redis 缓存
         """
         from zhenxun.models.plugin_info import PluginInfo
 
@@ -414,7 +415,22 @@ class PluginSnapshotService:
                 )
 
                 cache_key = cls._build_cache_key(plugin.module)
+
+                # 存入内存缓存（最快访问路径）
                 memory_cache.set(cache_key, snapshot)
+
+                # 同时存入 Redis 缓存（跨进程共享）
+                if cache_config.cache_mode != CacheMode.NONE:
+                    try:
+                        await CacheRoot.set(
+                            CacheType.PLUGIN_SNAPSHOT,
+                            cache_key,
+                            snapshot.model_dump(),
+                            expire=PLUGIN_REDIS_TTL,
+                        )
+                    except Exception:
+                        pass  # Redis 写入失败不影响预热
+
                 count += 1
 
             logger.info(f"已预热 {count} 个插件的快照缓存", LOG_COMMAND)
