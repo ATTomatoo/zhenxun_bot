@@ -117,10 +117,8 @@ class AuthSnapshotService:
             except Exception as e:
                 logger.debug(f"从Redis获取快照失败: {cache_key}", LOG_COMMAND, e=e)
 
-        # 3. 获取或创建 per-key 锁
-        if cache_key not in cls._build_locks:
-            cls._build_locks[cache_key] = asyncio.Lock()
-        lock = cls._build_locks[cache_key]
+        # 3. 获取或创建 per-key 锁（使用 setdefault 保证原子性）
+        lock = cls._build_locks.setdefault(cache_key, asyncio.Lock())
 
         # 4. 先尝试快速路径：检查是否有其他协程正在构建
         if cache_key in cls._building:
