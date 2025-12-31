@@ -137,8 +137,11 @@ class AuthSnapshotService:
             logger.warning(f"获取信号量超时，使用默认快照: {cache_key}", LOG_COMMAND)
             return AuthSnapshot(user_id=user_id, group_id=group_id, bot_id=bot_id)
 
+        need_build = False
+        future: asyncio.Future[AuthSnapshot] | None = None
+
         try:
-            # 6. 获取 per-key 锁，保护 _building 的检查和设置
+            # 6. 获取 per-key 锁，只保护 _building 的检查和设置
             async with lock:
                 # 再次检查缓存
                 if snapshot := memory_cache.get(cache_key):
@@ -147,29 +150,34 @@ class AuthSnapshotService:
                 # 检查是否有其他协程正在构建
                 if cache_key in cls._building:
                     future = cls._building[cache_key]
-                    # 释放锁后等待 future
                 else:
-                    # 在锁内开始构建（_do_build 会立即设置 _building）
-                    return await cls._do_build(user_id, group_id, bot_id, cache_key)
+                    # 创建 future 并设置到 _building（在锁内）
+                    loop = asyncio.get_running_loop()
+                    future = loop.create_future()
+                    cls._building[cache_key] = future
+                    need_build = True
 
-            # 锁外等待 future
-            return await future
+            # 7. 锁外执行（构建或等待）
+            if need_build:
+                return await cls._do_build_with_future(
+                    user_id, group_id, bot_id, cache_key, future
+                )
+            else:
+                # 等待其他协程的构建结果
+                return await future  # type: ignore
         finally:
             semaphore.release()
 
     @classmethod
-    async def _do_build(
+    async def _do_build_with_future(
         cls,
         user_id: str,
         group_id: str | None,
         bot_id: str,
         cache_key: str,
+        future: asyncio.Future[AuthSnapshot],
     ) -> AuthSnapshot:
-        """执行快照构建（信号量已在外部获取）"""
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[AuthSnapshot] = loop.create_future()
-        cls._building[cache_key] = future
-
+        """执行快照构建（future 已在锁内设置到 _building）"""
         try:
             # 构建快照
             snapshot = await SnapshotBuilder.build_auth_snapshot(
