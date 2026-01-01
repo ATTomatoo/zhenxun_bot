@@ -1,5 +1,4 @@
 import asyncio
-import time
 
 from tortoise import fields
 from tortoise.exceptions import IntegrityError
@@ -47,6 +46,13 @@ class UserConsole(Model):
     """缓存键字段"""
 
     @classmethod
+    async def _seed_uid_once(cls) -> None:
+        row = await cls.annotate(max_uid=Max("uid")).values("max_uid")
+        db_uid = (row[0]["max_uid"] or 0) if row else 0
+        cls._uid_next = (db_uid + 1) if db_uid >= 1 else 1
+        cls._uid_seeded = True
+
+    @classmethod
     async def get_user(cls, user_id: str, platform: str | None = None) -> "UserConsole":
         try:
             user, _ = await cls.get_or_create(
@@ -63,22 +69,12 @@ class UserConsole(Model):
     @classmethod
     async def get_new_uid(cls) -> int:
         async with cls._uid_lock:
-            now = time.monotonic()
-            if (not cls._uid_seeded) or (
-                now - cls._uid_last_sync >= cls._uid_sync_interval
-            ):
-                row = await cls.annotate(max_uid=Max("uid")).values("max_uid")
-                db_uid = row[0]["max_uid"] or 0
-                if cls._uid_next <= db_uid:
-                    cls._uid_next = db_uid + 1
-
-                cls._uid_seeded = True
-                cls._uid_last_sync = now
+            if not cls._uid_seeded:
+                await cls._seed_uid_once()
 
             uid = cls._uid_next
             cls._uid_next += 1
-
-            return uid if uid > 0 else 1
+            return uid
 
     @classmethod
     async def add_gold(

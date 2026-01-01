@@ -52,6 +52,13 @@ from .auth.exception import (
 # 这里主要用于控制单个权限检查步骤的上限时间。
 TIMEOUT_SECONDS = 5.0
 
+
+AUTHCHECK_MAX_CONCURRENCY = 200
+_AUTH_SEM = asyncio.Semaphore(AUTHCHECK_MAX_CONCURRENCY)
+
+_CTX_INFLIGHT: dict[tuple, asyncio.Task] = {}
+_CTX_INFLIGHT_LOCK = asyncio.Lock()
+
 DEDUP_WINDOW_SECONDS = 0.25
 
 _DEDUP_CACHE_MAX = 50000
@@ -156,7 +163,6 @@ class AuthChecker:
         start_time = time.time()
 
         try:
-            # 执行检查函数
             await asyncio.wait_for(check_func(**kwargs), timeout=TIMEOUT_SECONDS)
             result = CheckResult(success=True, execution_time=time.time() - start_time)
         except SkipPluginException as e:
@@ -169,7 +175,6 @@ class AuthChecker:
             logger.error(
                 f"{check_name} 检查超时", LOGGER_COMMAND, session=context.session
             )
-            # 超时时根据优先级决定是否继续
             if priority <= CheckPriority.HIGH:
                 result = CheckResult(
                     success=False,
@@ -177,7 +182,6 @@ class AuthChecker:
                     execution_time=time.time() - start_time,
                 )
             else:
-                # 低优先级检查超时，允许继续
                 result = CheckResult(
                     success=True, execution_time=time.time() - start_time
                 )
@@ -191,24 +195,20 @@ class AuthChecker:
 
         return result
 
-    async def _load_context(
+    async def _load_context_impl(
         self, matcher: Matcher, bot: Bot, session: Uninfo, message: UniMsg
     ) -> AuthContext:
-        """加载权限检查上下文数据"""
+        """加载权限检查上下文数据（原逻辑实现）"""
         entity = get_entity_ids(session)
         module = matcher.plugin_name or ""
 
         if not module:
             raise PermissionExemption("Matcher插件名称不存在...")
 
-        # 并行获取所有需要的数据。
-        # DataAccess 内部已经有 Redis 缓存和 DB 超时控制，这里只做一次整体超时保护，
-        # 不再额外手动走 CacheRoot 之类的二级 fallback，避免重复访问 Redis。
         user_dao = DataAccess(UserConsole)
         plugin_dao = DataAccess(PluginInfo)
         group_dao = DataAccess(GroupConsole) if entity.group_id else None
 
-        # 为了更清晰地定位超时来源，创建具名 task
         task_items = [
             (
                 "plugin",
@@ -242,7 +242,6 @@ class AuthChecker:
             )
 
         task_list = [item[1] for item in task_items]
-
         start_ts = time.monotonic()
 
         try:
@@ -250,8 +249,6 @@ class AuthChecker:
                 asyncio.gather(*task_list), timeout=TIMEOUT_SECONDS
             )
         except asyncio.TimeoutError:
-            # DataAccess 本身已经利用了 Redis / DB 缓存，这里整体超时直接视为失败，
-            # 避免在 Redis 也不稳定时再叠加一层「从缓存再试一次」的复杂 fallback。
             elapsed = time.monotonic() - start_ts
 
             def _describe(name: str, task: asyncio.Task) -> str:
@@ -274,17 +271,14 @@ class AuthChecker:
                 task.cancel()
             raise PermissionExemption("获取权限检查所需数据超时，请稍后再试...")
         except IntegrityError:
-            # 获取用户时可能因为 uid 竞争导致唯一约束冲突，稍作等待并重试多次
             logger.warning(
                 f"检测到重复创建用户，准备重试获取用户，模块: {module}",
                 LOGGER_COMMAND,
                 session=session,
-                # 重新获取插件（走 DataAccess 缓存，代价很小）
             )
             plugin = await plugin_dao.safe_get_or_none(module=module)
             user = None
             group = None
-            # 最多重试 3 次，逐步增加等待时间
             for attempt in range(3):
                 try:
                     user = await user_dao.get_by_func_or_none(
@@ -331,10 +325,41 @@ class AuthChecker:
             entity=entity,
         )
 
+    async def _load_context(
+        self, matcher: Matcher, bot: Bot, session: Uninfo, message: UniMsg
+    ) -> AuthContext:
+        entity = get_entity_ids(session)
+        module = matcher.plugin_name or ""
+        platform = getattr(session, "platform", "") or ""
+
+        ctx_key = (
+            platform,
+            str(bot.self_id),
+            str(module),
+            int(entity.user_id),
+            int(entity.group_id) if entity.group_id is not None else None,
+            int(entity.channel_id) if entity.channel_id is not None else None,
+        )
+
+        async with _CTX_INFLIGHT_LOCK:
+            task = _CTX_INFLIGHT.get(ctx_key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._load_context_impl(matcher, bot, session, message),
+                    name=f"authctx:{ctx_key}",
+                )
+                _CTX_INFLIGHT[ctx_key] = task
+
+        try:
+            return await task
+        finally:
+            async with _CTX_INFLIGHT_LOCK:
+                if _CTX_INFLIGHT.get(ctx_key) is task:
+                    _CTX_INFLIGHT.pop(ctx_key, None)
+
     async def _run_auth_ban_with_lock(self, context: AuthContext):
         entity = context.entity
         lock_key = (entity.user_id, entity.group_id)
-
         lock = _BAN_LOCKS[lock_key]
         async with lock:
             await auth_ban(
@@ -360,13 +385,10 @@ class AuthChecker:
         try:
             bot_filter(session)
 
-            # 1. 加载上下文数据（可能包含多次数据库/缓存访问，这里单独计时）
             ctx_start = time.time()
             context = await self._load_context(matcher, bot, session, message)
             hook_times["load_context"] = f"{time.time() - ctx_start:.3f}s"
 
-            # 2. 按优先级执行检查
-            # 阶段1：关键检查（ban、bot状态）
             critical_checks = [
                 (
                     "auth_ban",
@@ -391,7 +413,6 @@ class AuthChecker:
                         raise result.error
                     raise result.error or PermissionExemption(f"{check_name} 检查失败")
 
-                # 4. 阶段2：高优先级检查（插件状态、群组状态）
             high_priority_checks = [
                 (
                     "auth_plugin",
@@ -412,7 +433,6 @@ class AuthChecker:
                 ),
             ]
 
-            # 并行执行高优先级检查
             high_tasks = []
             for check_name, priority, check_func in high_priority_checks:
                 task = self._execute_check(check_func, check_name, priority, context)
@@ -426,9 +446,8 @@ class AuthChecker:
                     if isinstance(result.error, SkipPluginException):
                         ignore_flag = True
                         raise result.error
-                    raise result.error or PermissionExemption(
-                        f"{check_name} 检检查失败"
-                    )
+                    raise result.error or PermissionExemption(f"{check_name} 检查失败")
+
             medium_checks = [
                 (
                     "auth_admin",
@@ -442,7 +461,6 @@ class AuthChecker:
                 ),
             ]
 
-            # 并行执行中等优先级检查
             medium_tasks = []
             for check_name, priority, check_func in medium_checks:
                 task = self._execute_check(check_func, check_name, priority, context)
@@ -458,7 +476,6 @@ class AuthChecker:
                         raise result.error
                     raise result.error or PermissionExemption(f"{check_name} 检查失败")
 
-            # 6. 阶段4：低优先级检查（金币检查）
             try:
                 cost_start = time.time()
                 cost_gold = await asyncio.wait_for(
@@ -491,7 +508,7 @@ class AuthChecker:
             logger.debug("超级用户跳过权限检测...", LOGGER_COMMAND, session=session)
         except PermissionExemption as e:
             logger.info(str(e), LOGGER_COMMAND, session=session)
-        # 扣除金币
+
         if not ignore_flag and cost_gold > 0:
             try:
                 await asyncio.wait_for(
@@ -512,7 +529,6 @@ class AuthChecker:
                     session=session,
                 )
 
-        # 记录总执行时间
         total_time = time.time() - start_time
         if total_time > WARNING_THRESHOLD:
             logger.warning(
@@ -533,16 +549,25 @@ class AuthChecker:
         message: UniMsg,
     ):
         key = _make_dedup_key(matcher, bot, session)
+
         cached_ignored = await _dedup_cache_get(key)
         if cached_ignored is not None:
             if cached_ignored:
                 raise IgnoredException("权限检测 ignore (dedup-window)")
             return
+
         async with _INFLIGHT_LOCK:
             task = _INFLIGHT.get(key)
             if task is None:
+
+                async def _run_with_semaphore():
+                    async with _AUTH_SEM:
+                        return await self._check_impl(
+                            matcher, event, bot, session, message
+                        )
+
                 task = asyncio.create_task(
-                    self._check_impl(matcher, event, bot, session, message),
+                    _run_with_semaphore(),
                     name=f"authcheck:{key}",
                 )
                 _INFLIGHT[key] = task
@@ -553,6 +578,7 @@ class AuthChecker:
             async with _INFLIGHT_LOCK:
                 if _INFLIGHT.get(key) is task:
                     _INFLIGHT.pop(key, None)
+
         await _dedup_cache_set(key, bool(ignored_flag))
 
         if ignored_flag:
