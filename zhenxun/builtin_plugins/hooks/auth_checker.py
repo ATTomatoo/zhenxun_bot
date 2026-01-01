@@ -10,10 +10,11 @@
 """
 
 import asyncio
+import time
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
-import time
 from typing import Any
 
 from nonebot.adapters import Bot, Event
@@ -50,6 +51,59 @@ from .auth.exception import (
 # 超时设置（秒）—— DataAccess 内部已对单次 DB / 缓存访问做了自己的超时控制；
 # 这里主要用于控制单个权限检查步骤的上限时间。
 TIMEOUT_SECONDS = 5.0
+
+DEDUP_WINDOW_SECONDS = 0.25
+
+_DEDUP_CACHE_MAX = 50000
+
+_INFLIGHT: dict[tuple, asyncio.Task] = {}
+_INFLIGHT_LOCK = asyncio.Lock()
+
+_DEDUP_CACHE: dict[tuple, tuple[float, bool]] = {}
+_DEDUP_CACHE_LOCK = asyncio.Lock()
+
+_BAN_LOCKS: dict[tuple[int, int | None], asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def _make_dedup_key(matcher: Matcher, bot: Bot, session: Uninfo) -> tuple:
+    entity = get_entity_ids(session)
+    module = matcher.plugin_name or ""
+    platform = getattr(session, "platform", "") or ""
+    return (
+        platform,
+        str(bot.self_id),
+        str(module),
+        int(entity.user_id),
+        int(entity.group_id) if entity.group_id is not None else None,
+        int(entity.channel_id) if entity.channel_id is not None else None,
+    )
+
+
+async def _dedup_cache_get(key: tuple) -> bool | None:
+    now = time.monotonic()
+    async with _DEDUP_CACHE_LOCK:
+        item = _DEDUP_CACHE.get(key)
+        if not item:
+            return None
+        expire_ts, ignored_flag = item
+        if expire_ts <= now:
+            _DEDUP_CACHE.pop(key, None)
+            return None
+        return ignored_flag
+
+
+async def _dedup_cache_set(key: tuple, ignored_flag: bool) -> None:
+    now = time.monotonic()
+    expire_ts = now + DEDUP_WINDOW_SECONDS
+    async with _DEDUP_CACHE_LOCK:
+        _DEDUP_CACHE[key] = (expire_ts, ignored_flag)
+
+        # 简单的容量控制：超过上限就粗暴清掉一部分（足够小改动且有效）
+        if len(_DEDUP_CACHE) > _DEDUP_CACHE_MAX:
+            # 删除最早过期的一批（近似）：直接清 20%
+            n = int(_DEDUP_CACHE_MAX * 0.2)
+            for k in list(_DEDUP_CACHE.keys())[:n]:
+                _DEDUP_CACHE.pop(k, None)
 
 
 # 检查优先级
@@ -225,8 +279,8 @@ class AuthChecker:
                 f"检测到重复创建用户，准备重试获取用户，模块: {module}",
                 LOGGER_COMMAND,
                 session=session,
+                # 重新获取插件（走 DataAccess 缓存，代价很小）
             )
-            # 重新获取插件（走 DataAccess 缓存，代价很小）
             plugin = await plugin_dao.safe_get_or_none(module=module)
             user = None
             group = None
@@ -277,10 +331,27 @@ class AuthChecker:
             entity=entity,
         )
 
-    async def check(
-        self, matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: UniMsg
-    ):
-        """执行权限检查（优化版本）"""
+    async def _run_auth_ban_with_lock(self, context: AuthContext):
+        entity = context.entity
+        lock_key = (entity.user_id, entity.group_id)
+
+        lock = _BAN_LOCKS[lock_key]
+        async with lock:
+            await auth_ban(
+                context.matcher,
+                context.bot,
+                context.session,
+                context.plugin,
+            )
+
+    async def _check_impl(
+        self,
+        matcher: Matcher,
+        event: Event,
+        bot: Bot,
+        session: Uninfo,
+        message: UniMsg,
+    ) -> bool:
         start_time = time.time()
         cost_gold = 0
         ignore_flag = False
@@ -300,9 +371,7 @@ class AuthChecker:
                 (
                     "auth_ban",
                     CheckPriority.CRITICAL,
-                    lambda: auth_ban(
-                        context.matcher, context.bot, context.session, context.plugin
-                    ),
+                    lambda: self._run_auth_ban_with_lock(context),
                 ),
                 (
                     "auth_bot",
@@ -322,7 +391,7 @@ class AuthChecker:
                         raise result.error
                     raise result.error or PermissionExemption(f"{check_name} 检查失败")
 
-            # 4. 阶段2：高优先级检查（插件状态、群组状态）
+                # 4. 阶段2：高优先级检查（插件状态、群组状态）
             high_priority_checks = [
                 (
                     "auth_plugin",
@@ -357,9 +426,9 @@ class AuthChecker:
                     if isinstance(result.error, SkipPluginException):
                         ignore_flag = True
                         raise result.error
-                    raise result.error or PermissionExemption(f"{check_name} 检查失败")
-
-            # 5. 阶段3：中等优先级检查（管理员权限、限制）
+                    raise result.error or PermissionExemption(
+                        f"{check_name} 检检查失败"
+                    )
             medium_checks = [
                 (
                     "auth_admin",
@@ -422,7 +491,6 @@ class AuthChecker:
             logger.debug("超级用户跳过权限检测...", LOGGER_COMMAND, session=session)
         except PermissionExemption as e:
             logger.info(str(e), LOGGER_COMMAND, session=session)
-
         # 扣除金币
         if not ignore_flag and cost_gold > 0:
             try:
@@ -454,7 +522,40 @@ class AuthChecker:
                 session=session,
             )
 
-        if ignore_flag:
+        return ignore_flag
+
+    async def check(
+        self,
+        matcher: Matcher,
+        event: Event,
+        bot: Bot,
+        session: Uninfo,
+        message: UniMsg,
+    ):
+        key = _make_dedup_key(matcher, bot, session)
+        cached_ignored = await _dedup_cache_get(key)
+        if cached_ignored is not None:
+            if cached_ignored:
+                raise IgnoredException("权限检测 ignore (dedup-window)")
+            return
+        async with _INFLIGHT_LOCK:
+            task = _INFLIGHT.get(key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._check_impl(matcher, event, bot, session, message),
+                    name=f"authcheck:{key}",
+                )
+                _INFLIGHT[key] = task
+
+        try:
+            ignored_flag = await task
+        finally:
+            async with _INFLIGHT_LOCK:
+                if _INFLIGHT.get(key) is task:
+                    _INFLIGHT.pop(key, None)
+        await _dedup_cache_set(key, bool(ignored_flag))
+
+        if ignored_flag:
             raise IgnoredException("权限检测 ignore")
 
 
