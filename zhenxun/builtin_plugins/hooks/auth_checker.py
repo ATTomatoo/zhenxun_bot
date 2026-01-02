@@ -53,7 +53,7 @@ from .auth.exception import (
 TIMEOUT_SECONDS = 5.0
 
 
-AUTHCHECK_MAX_CONCURRENCY = 200
+AUTHCHECK_MAX_CONCURRENCY = 30
 _AUTH_SEM = asyncio.Semaphore(AUTHCHECK_MAX_CONCURRENCY)
 
 _CTX_INFLIGHT: dict[tuple, asyncio.Task] = {}
@@ -558,29 +558,45 @@ class AuthChecker:
 
         async with _INFLIGHT_LOCK:
             task = _INFLIGHT.get(key)
-            if task is None:
-
-                async def _run_with_semaphore():
-                    async with _AUTH_SEM:
-                        return await self._check_impl(
-                            matcher, event, bot, session, message
-                        )
-
-                task = asyncio.create_task(
-                    _run_with_semaphore(),
-                    name=f"authcheck:{key}",
-                )
-                _INFLIGHT[key] = task
+        if task is not None:
+            ignored_flag = await task
+            await _dedup_cache_set(key, bool(ignored_flag))
+            if ignored_flag:
+                raise IgnoredException("权限检测 ignore")
+            return
+        await _AUTH_SEM.acquire()
+        created = False
 
         try:
-            ignored_flag = await task
-        finally:
             async with _INFLIGHT_LOCK:
-                if _INFLIGHT.get(key) is task:
-                    _INFLIGHT.pop(key, None)
+                task = _INFLIGHT.get(key)
+                if task is None:
+
+                    async def _run_and_release():
+                        try:
+                            return await self._check_impl(
+                                matcher, event, bot, session, message
+                            )
+                        finally:
+                            _AUTH_SEM.release()
+
+                    task = asyncio.create_task(
+                        _run_and_release(), name=f"authcheck:{key}"
+                    )
+                    _INFLIGHT[key] = task
+                    created = True
+            if not created:
+                _AUTH_SEM.release()
+
+            ignored_flag = await task
+
+        finally:
+            if created:
+                async with _INFLIGHT_LOCK:
+                    if _INFLIGHT.get(key) is task:
+                        _INFLIGHT.pop(key, None)
 
         await _dedup_cache_set(key, bool(ignored_flag))
-
         if ignored_flag:
             raise IgnoredException("权限检测 ignore")
 
