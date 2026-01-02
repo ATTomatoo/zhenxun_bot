@@ -26,11 +26,14 @@ Config.add_plugin_config(
 )
 
 BAN_CHECK_TIMEOUT_SECONDS = 0.30
+
 _BAN_CACHE_TTL = 0.30
 _BAN_CACHE_MAX = 20000
-
 _BAN_CACHE: dict[tuple[str | None, str | None], tuple[float, int]] = {}
 _BAN_CACHE_LOCK = asyncio.Lock()
+
+_BAN_INFLIGHT: dict[tuple[str | None, str | None], asyncio.Task] = {}
+_BAN_INFLIGHT_LOCK = asyncio.Lock()
 
 _BAN_DAO = DataAccess(BanConsole)
 
@@ -86,6 +89,35 @@ async def calculate_ban_time(ban_record: BanConsole | None) -> int:
     return 0
 
 
+async def _is_ban_query(user_id: str | None, group_id: str | None) -> int:
+    if not user_id and not group_id:
+        return 0
+
+    try:
+        record = await asyncio.wait_for(
+            _BAN_DAO.safe_get_or_none(user_id=user_id, group_id__isnull=True),
+            timeout=BAN_CHECK_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            f"查询ban记录超时(>{BAN_CHECK_TIMEOUT_SECONDS}s): user_id={user_id}, group_id={group_id}",
+            LOGGER_COMMAND,
+        )
+        return 0
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return 0
+
+    if not record:
+        return 0
+
+    if record.duration > 0 or record.duration == -1:
+        return await calculate_ban_time(record)
+
+    return 0
+
+
 async def is_ban(user_id: str | None, group_id: str | None) -> int:
     """检查用户或群组是否被ban
 
@@ -103,81 +135,31 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
     if cached is not None:
         return cached
 
-    start_time = time.monotonic()
-
-    # 分别获取用户在群组中的ban记录和全局ban记录
-    group_user = None
-    user = None
-
-    task_list: list[asyncio.Task] = []
-
-    if user_id:
-        task_list.append(
-            asyncio.create_task(
-                _BAN_DAO.safe_get_or_none(user_id=user_id, group_id__isnull=True),
-                name=f"ban:user_global:{user_id}",
+    key = (user_id, group_id)
+    async with _BAN_INFLIGHT_LOCK:
+        task = _BAN_INFLIGHT.get(key)
+        if task is None:
+            task = asyncio.create_task(
+                _is_ban_query(user_id, group_id),
+                name=f"ban:query:{user_id}:{group_id}",
             )
-        )
-
-    if not task_list:
-        await _ban_cache_set(user_id, group_id, 0)
-        return 0
+            _BAN_INFLIGHT[key] = task
 
     try:
-        ban_records = await asyncio.wait_for(
-            asyncio.gather(*task_list, return_exceptions=True),
-            timeout=BAN_CHECK_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        for t in task_list:
-            if not t.done():
-                t.cancel()
-        await asyncio.gather(*task_list, return_exceptions=True)
-
-        logger.error(
-            f"查询ban记录超时(>{BAN_CHECK_TIMEOUT_SECONDS}s): user_id={user_id}, group_id={group_id}",
-            LOGGER_COMMAND,
-        )
-        await _ban_cache_set(user_id, group_id, 0)
-        return 0
+        val = await task
     except asyncio.CancelledError:
-        for t in task_list:
-            if not t.done():
-                t.cancel()
-        await asyncio.gather(*task_list, return_exceptions=True)
+        async with _BAN_INFLIGHT_LOCK:
+            if _BAN_INFLIGHT.get(key) is task:
+                _BAN_INFLIGHT.pop(key, None)
         raise
+    finally:
+        if task.done():
+            async with _BAN_INFLIGHT_LOCK:
+                if _BAN_INFLIGHT.get(key) is task:
+                    _BAN_INFLIGHT.pop(key, None)
 
-    records: list[BanConsole] = []
-    for r in ban_records:
-        if isinstance(r, Exception):
-            # 这里不建议当作 error 日志刷屏；直接视为“本次未命中 ban”
-            continue
-        if r:
-            records.append(r)
-
-    if not records:
-        await _ban_cache_set(user_id, group_id, 0)
-        return 0
-
-    max_ban_time: int = 0
-    for record in records:
-        if record.duration > 0 or record.duration == -1:
-            ban_time = await calculate_ban_time(record)
-            if ban_time == -1 or ban_time > max_ban_time:
-                max_ban_time = ban_time
-
-    await _ban_cache_set(user_id, group_id, max_ban_time)
-
-    elapsed = time.monotonic() - start_time
-    if elapsed > WARNING_THRESHOLD:
-        logger.warning(
-            f"is_ban 耗时: {elapsed:.3f}s",
-            LOGGER_COMMAND,
-            session=user_id,
-            group_id=group_id,
-        )
-
-    return max_ban_time
+    await _ban_cache_set(user_id, group_id, val)
+    return val
 
 
 def check_plugin_type(matcher: Matcher) -> bool:
