@@ -1,12 +1,13 @@
 import asyncio
-from collections.abc import Iterable
 import contextlib
+from collections.abc import Iterable
 from typing import Any, ClassVar
-from typing_extensions import Self
 
 from tortoise.backends.base.client import BaseDBAsyncClient
 from tortoise.exceptions import IntegrityError, MultipleObjectsReturned
 from tortoise.models import Model as TortoiseModel
+from tortoise.transactions import in_transaction
+from typing_extensions import Self
 
 from zhenxun.services.cache import CacheRoot
 from zhenxun.services.log import logger
@@ -21,13 +22,8 @@ class Model(TortoiseModel):
     增强的ORM基类，解决锁嵌套问题
     """
 
-    # sem_data[cls][lock_type] 可以是 Semaphore（全局）
-    # 或 dict[key, Semaphore]（按键）
-    sem_data: ClassVar[dict[type["Model"], dict[DbLockType, Any]]] = {}
-    # 跟踪当前协程持有的锁集合 {(cls, lock_type, lock_key), ...}
-    _current_locks: ClassVar[
-        dict[int, set[tuple[type["Model"], DbLockType, Any | None]]]
-    ] = {}
+    sem_data: ClassVar[dict[str, dict[str, asyncio.Semaphore]]] = {}
+    _current_locks: ClassVar[dict[int, DbLockType]] = {}  # 跟踪当前协程持有的锁
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -81,100 +77,44 @@ class Model(TortoiseModel):
         return None
 
     @classmethod
-    def get_semaphore(cls, lock_type: DbLockType, lock_key: Any | None = None):
-        """
-        获取信号量
-
-        设计约定（弃用 enable_lock，仅通过 lock_fields 控制是否启用锁）:
-        - 如果未配置 lock_fields，或其中不存在对应 lock_type，则不加锁
-        - 如果 lock_fields[lock_type] 配置了按字段的锁（如 tuple[str, ...]），
-          则调用处按字段值生成 lock_key，在此为不同 lock_key
-          分配不同信号量，实现「按键」互斥
-        - 如仅需全局锁，可在 lock_fields 中声明该 lock_type，
-          且在 _lock_context 传入 lock_key=None
-        """
-        lock_fields: dict[DbLockType, Any] = getattr(cls, "lock_fields", {}) or {}
-        # 未在 lock_fields 中声明的 lock_type 不加锁
-        if lock_type not in lock_fields:
+    def get_semaphore(cls, lock_type: DbLockType):
+        enable_lock = getattr(cls, "enable_lock", None)
+        if not enable_lock or lock_type not in enable_lock:
             return None
 
-        cls_sem = cls.sem_data.setdefault(cls, {})
-
-        # 配置了按字段的锁并且提供了具体的 lock_key 时，使用「按键」锁
-        if lock_key is not None:
-            keyed = cls_sem.setdefault(lock_type, {})
-            if not isinstance(keyed, dict):
-                # 兼容历史数据，重置为按键字典
-                keyed = {}
-                cls_sem[lock_type] = keyed
-            if lock_key not in keyed:
-                keyed[lock_key] = asyncio.Semaphore(1)
-            return keyed[lock_key]
-
-        # 默认全局锁
-        sem = cls_sem.get(lock_type)
-        if not isinstance(sem, asyncio.Semaphore):
-            sem = asyncio.Semaphore(1)
-            cls_sem[lock_type] = sem
-        return sem
+        if cls.__name__ not in cls.sem_data:
+            cls.sem_data[cls.__name__] = {}
+        if lock_type not in cls.sem_data[cls.__name__]:
+            cls.sem_data[cls.__name__][lock_type] = asyncio.Semaphore(1)
+        return cls.sem_data[cls.__name__][lock_type]
 
     @classmethod
-    def _require_lock(cls, lock_type: DbLockType, lock_key: Any | None) -> bool:
+    def _require_lock(cls, lock_type: DbLockType) -> bool:
         """检查是否需要真正加锁"""
         task_id = id(asyncio.current_task())
-        held = cls._current_locks.get(task_id)
-        if not held:
-            return True
-        # 同一协程内，如果已经持有完全相同的一把锁
-        # （同一模型 + 同一 lock_type + 同一 lock_key），视为重入，
-        # 不再重复加锁，避免自锁
-        return (cls, lock_type, lock_key) not in held
+        return cls._current_locks.get(task_id) != lock_type
 
     @classmethod
     @contextlib.asynccontextmanager
-    async def _lock_context(cls, lock_type: DbLockType, lock_key: Any | None = None):
+    async def _lock_context(cls, lock_type: DbLockType):
         """带重入检查的锁上下文"""
         task_id = id(asyncio.current_task())
-        need_lock = cls._require_lock(lock_type, lock_key)
+        need_lock = cls._require_lock(lock_type)
 
-        if not need_lock:
-            # 已经持有这把锁，直接透传，支持可重入
-            yield
-            return
-
-        sem = cls.get_semaphore(lock_type, lock_key)
-        if not sem:
-            # 对于未启用锁的场景，直接继续执行
-            yield
-            return
-
-        lock_id = (cls, lock_type, lock_key)
-        held = cls._current_locks.setdefault(task_id, set())
-        held.add(lock_id)
-        try:
+        if need_lock and (sem := cls.get_semaphore(lock_type)):
+            cls._current_locks[task_id] = lock_type
             async with sem:
                 yield
-        finally:
-            # 安全移除当前锁记录
-            held.discard(lock_id)
-            if not held:
-                cls._current_locks.pop(task_id, None)
+            cls._current_locks.pop(task_id, None)
+        else:
+            yield
 
     @classmethod
     async def create(
         cls, using_db: BaseDBAsyncClient | None = None, **kwargs: Any
     ) -> Self:
         """创建数据（使用CREATE锁）"""
-        lock_fields: dict[DbLockType, Any] = getattr(cls, "lock_fields", {}) or {}
-        lock_key = None
-        if field := lock_fields.get(DbLockType.CREATE):
-            if isinstance(field, tuple):
-                key_tuple = tuple(kwargs.get(f) for f in field)
-                lock_key = key_tuple if any(v is not None for v in key_tuple) else None
-            else:
-                lock_key = kwargs.get(field)
-
-        async with cls._lock_context(DbLockType.CREATE, lock_key):
+        async with cls._lock_context(DbLockType.CREATE):
             # 直接调用父类的_create方法避免触发save的锁
             result = await super().create(using_db=using_db, **kwargs)
             if cache_type := cls.get_cache_type():
@@ -192,9 +132,11 @@ class Model(TortoiseModel):
         result = await super().get_or_create(
             defaults=defaults, using_db=using_db, **kwargs
         )
-        if cache_type := cls.get_cache_type():
-            await CacheRoot.invalidate_cache(cache_type, cls.get_cache_key(result[0]))
-        return result
+        obj, created = result
+        if created:
+            if cache_type := cls.get_cache_type():
+                await CacheRoot.invalidate_cache(cache_type, cls.get_cache_key(obj))
+        return obj, created
 
     @classmethod
     async def update_or_create(
@@ -203,51 +145,19 @@ class Model(TortoiseModel):
         using_db: BaseDBAsyncClient | None = None,
         **kwargs: Any,
     ) -> tuple[Self, bool]:
-        """更新或创建数据（优化版本，减少锁等待）"""
-        lock_fields: dict[DbLockType, Any] = getattr(cls, "lock_fields", {}) or {}
-        lock_key = None
-        if field := lock_fields.get(DbLockType.UPSERT):
-            if isinstance(field, tuple):
-                key_tuple = tuple(kwargs.get(f) for f in field)
-                lock_key = key_tuple if any(v is not None for v in key_tuple) else None
-            else:
-                lock_key = kwargs.get(field)
-
-        async with cls._lock_context(DbLockType.UPSERT, lock_key):
+        """更新或创建数据（使用UPSERT锁）"""
+        async with cls._lock_context(DbLockType.UPSERT):
             try:
-                # 优化：先尝试无锁查询，大部分情况数据已存在
-                if obj := await cls.get_or_none(**kwargs):
-                    if defaults:
-                        await obj.update_from_dict(defaults)
-                        # 只更新指定字段，减少写操作
-                        await obj.save(update_fields=list(defaults.keys()))
-                    if cache_type := cls.get_cache_type():
-                        await CacheRoot.invalidate_cache(
-                            cache_type, cls.get_cache_key(obj)
-                        )
-                    return obj, False
-
-                # 数据不存在，尝试创建（依赖数据库唯一约束）
-                try:
-                    obj = await super().create(
-                        using_db=using_db, **kwargs, **(defaults or {})
-                    )
-                    if cache_type := cls.get_cache_type():
-                        await CacheRoot.invalidate_cache(
-                            cache_type, cls.get_cache_key(obj)
-                        )
-                    return obj, True
-                except IntegrityError:
-                    # 并发创建冲突，重新获取并更新
-                    obj = await cls.get(**kwargs)
-                    if defaults:
-                        await obj.update_from_dict(defaults)
-                        await obj.save(update_fields=list(defaults.keys()))
-                    if cache_type := cls.get_cache_type():
-                        await CacheRoot.invalidate_cache(
-                            cache_type, cls.get_cache_key(obj)
-                        )
-                    return obj, False
+                # 先尝试更新（带行锁）
+                async with in_transaction():
+                    if obj := await cls.filter(**kwargs).select_for_update().first():
+                        await obj.update_from_dict(defaults or {})
+                        await obj.save()
+                        result = (obj, False)
+                    else:
+                        # 创建时不重复加锁
+                        result = await cls.create(**kwargs, **(defaults or {})), True
+                return result
             except IntegrityError:
                 # 处理极端情况下的唯一约束冲突
                 obj = await cls.get(**kwargs)
