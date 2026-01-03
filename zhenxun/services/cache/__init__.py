@@ -78,16 +78,17 @@ message_list.append("Hello")  # 类型安全
 """
 
 import asyncio
+import time
 from collections.abc import Callable
 from datetime import datetime
 from functools import wraps
 from typing import Any, ClassVar, Generic, TypeVar, get_type_hints
 
+import nonebot
 from aiocache import Cache as AioCache
 from aiocache import SimpleMemoryCache
 from aiocache.base import BaseCache
 from aiocache.serializers import JsonSerializer
-import nonebot
 from nonebot.compat import model_dump
 from nonebot.utils import is_coroutine_callable
 from pydantic import BaseModel
@@ -283,6 +284,10 @@ class CacheData:
 class CacheManager:
     """缓存管理器"""
 
+    _invalidate_ts: ClassVar[dict[tuple[str, str | None], float]] = {}
+    _invalidate_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    _global_all_users_throttle: ClassVar[float] = 2.0
+    _default_throttle: ClassVar[float] = 0.5
     _instance: ClassVar["CacheManager | None"] = None
     _cache_backend: BaseCache | AioCache | None = None
     _registry: ClassVar[dict[str, CacheModel]] = {}
@@ -505,39 +510,33 @@ class CacheManager:
                 logger.error(f"从缓存后端获取数据 {name} 失败", LOG_COMMAND, e=e)
         return None
 
-    async def invalidate_cache(
-        self, cache_type: str, key: str | dict[str, Any] | None = None
-    ) -> bool:
-        """使指定类型的缓存失效
+    async def invalidate_cache(self, cache_type: str, cache_key: str | None = None):
+        """清除缓存（带去抖/限流）"""
+        if not self._enabled:
+            return
 
-        当数据库中的数据发生变化时，调用此方法清除对应类型的缓存
+        now = time.monotonic()
+        throttle = (
+            self._global_all_users_throttle
+            if cache_type == "GLOBAL_ALL_USERS"
+            else self._default_throttle
+        )
+        ts_key = (cache_type, cache_key)
 
-        参数:
-            cache_type: 缓存类型
-            key: 缓存键或键参数，为None时清除该类型的所有缓存
+        async with self._invalidate_lock:
+            last = self._invalidate_ts.get(ts_key, 0.0)
+            if now - last < throttle:
+                return
+            self._invalidate_ts[ts_key] = now
 
-        返回:
-            bool: 是否成功
-        """
-        # 如果缓存被禁用或缓存模式为NONE，直接返回True
-        if not self.enabled or cache_config.cache_mode == CacheMode.NONE:
-            return True
+        logger.debug(f"清除缓存: {cache_type}, 键: {cache_key}", "CacheRoot")
 
-        try:
-            if key is not None:
-                # 只清除特定的缓存项
-                cache_key = self._build_key(cache_type, key)
-                await self.cache_backend.delete(cache_key)  # type: ignore
-                logger.debug(f"清除缓存: {cache_type}, 键: {key}", LOG_COMMAND)
-                return True
-            else:
-                # 清除指定类型的所有缓存
-                logger.debug(f"清除所有 {cache_type} 缓存", LOG_COMMAND)
-                return await self.clear(cache_type)
-        except Exception as e:
-            if f"缓存类型 {cache_type} 不存在" not in str(e):
-                logger.warning(f"清除缓存 {cache_type} 失败", LOG_COMMAND, e=e)
-            return False
+        if cache_key:
+            await self.delete(cache_type, cache_key)
+            return
+
+        # cache_key=None 表示清这个 type 的整体缓存：走 clear(type)（已做安全处理）
+        await self.clear(cache_type)
 
     async def get(
         self, cache_type: str, key: str | dict[str, Any], default: Any = None
@@ -599,6 +598,8 @@ class CacheManager:
         返回:
             bool: 是否成功
         """
+        from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
+
         # 如果缓存被禁用或缓存模式为NONE，直接返回False
         if not self.enabled or cache_config.cache_mode == CacheMode.NONE:
             return False
@@ -613,17 +614,14 @@ class CacheManager:
             # 设置过期时间
             ttl = expire if expire is not None else model.expire
 
-            # 设置缓存（使用较短的超时时间，避免阻塞主流程）
+            # 设置缓存
             await asyncio.wait_for(
                 self.cache_backend.set(cache_key, serialized_value, ttl=ttl),  # type: ignore
-                timeout=min(CACHE_TIMEOUT, 2.0),  # 最多2秒，避免阻塞太久
+                timeout=DB_TIMEOUT_SECONDS,
             )
             return True
         except asyncio.TimeoutError:
-            logger.warning(
-                f"设置缓存 {cache_type}:{cache_key} 超时（已跳过，不影响主流程）",
-                LOG_COMMAND,
-            )
+            logger.error(f"设置缓存 {cache_type}:{cache_key} 超时", LOG_COMMAND)
             return False
         except Exception as e:
             logger.error(f"设置缓存 {cache_type} 失败", LOG_COMMAND, e=e)
@@ -674,41 +672,34 @@ class CacheManager:
             logger.error(f"检查缓存 {cache_type} 是否存在失败", LOG_COMMAND, e=e)
             return False
 
-    async def clear(self, cache_type: str | None = None) -> bool:
-        """清除缓存
+    async def clear(self, cache_type: str | None = None):
+        if not self._enabled:
+            return
 
-        参数:
-            cache_type: 缓存类型，为None时清除所有缓存
+        if not cache_type:
+            await self.cache_backend.clear()
+            return
 
-        返回:
-            bool: 是否成功
-        """
-        # 如果缓存被禁用或缓存模式为NONE，直接返回False
-        if not self.enabled or cache_config.cache_mode == CacheMode.NONE:
-            return False
+        cache_type = cache_type.upper()
+        prefix = f"{cache_type}{CACHE_KEY_SEPARATOR}"
 
-        try:
-            if cache_type:
-                # 清除指定类型的缓存
-                # pattern = f"{cache_type.upper()}{CACHE_KEY_SEPARATOR}*"
-                # 由于aiocache可能没有delete_pattern方法，使用其他方式清除
-                # 这里简化处理，直接清除所有缓存
-                await self.cache_backend.clear()  # type: ignore
-            else:
-                # 清除所有缓存
-                await self.cache_backend.clear()  # type: ignore
-            return True
-        except Exception as e:
-            if f"缓存类型 {cache_type} 不存在" not in str(e):
-                logger.warning("清除缓存失败", LOG_COMMAND, e=e)
-            return False
+        if hasattr(self.cache_backend, "delete_pattern"):
+            await self.cache_backend.delete_pattern(f"{prefix}*")
+            return
+        if hasattr(self.cache_backend, "delete_prefix"):
+            await self.cache_backend.delete_prefix(prefix)
+            return
+        logger.warning(
+            f"缓存后端不支持按前缀清理，已跳过 clear({cache_type}) 以避免全量清空",
+            "CacheRoot",
+        )
 
     async def close(self):
         """关闭缓存连接"""
         if self._cache_backend:
             try:
                 await self._cache_backend.close()  # type: ignore
-            except Exception as e:
+            except (AttributeError, Exception) as e:
                 logger.warning(f"关闭缓存连接失败: {e}", LOG_COMMAND)
             self._cache_backend = None
 

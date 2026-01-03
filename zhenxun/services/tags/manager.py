@@ -2,14 +2,15 @@
 标签服务的核心实现，负责标签的增删改查与动态规则解析。
 """
 
+import asyncio
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, ClassVar
 
+import nonebot
 from aiocache import Cache, cached
 from arclet.alconna import Alconna, Args
-import nonebot
 from nonebot.adapters import Bot
 from tortoise.exceptions import IntegrityError
 from tortoise.expressions import Q
@@ -52,6 +53,12 @@ class TagManager:
     """群组标签管理服务。提供对群组标签的注册、解析与维护等操作。"""
 
     _dynamic_handlers: ClassVar[dict[str, HandlerInfo]] = {}
+
+    _tag_cache: ClassVar[Cache] = Cache(Cache.MEMORY, namespace="tag_service")
+
+    _invalidate_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    _invalidate_task: ClassVar[asyncio.Task | None] = None
+    _invalidate_debounce_s: ClassVar[float] = 0.25
 
     def add_field_rule(self, name: str, db_field: str, value_type: type):
         """
@@ -115,10 +122,25 @@ class TagManager:
         return decorator
 
     async def _invalidate_cache(self):
-        """辅助函数，用于清除标签相关的缓存，确保数据一致性。"""
-        cache = Cache(Cache.MEMORY, namespace="tag_service")
-        await cache.clear()
-        logger.debug("已清除所有群组标签缓存。")
+        """清除标签相关缓存（带去抖合并），避免高频写导致反复 clear()."""
+
+        cls = type(self)
+
+        async def _do_clear_after_delay():
+            try:
+                await asyncio.sleep(cls._invalidate_debounce_s)
+                await cls._tag_cache.clear()
+                logger.debug("已清除所有群组标签缓存（debounced）。")
+            finally:
+                async with cls._invalidate_lock:
+                    if cls._invalidate_task is asyncio.current_task():
+                        cls._invalidate_task = None
+
+        async with cls._invalidate_lock:
+            if cls._invalidate_task and not cls._invalidate_task.done():
+                return
+
+            cls._invalidate_task = asyncio.create_task(_do_clear_after_delay())
 
     @invalidate_on_change
     async def create_tag(

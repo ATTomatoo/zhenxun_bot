@@ -52,8 +52,7 @@ from .auth.exception import (
 # 这里主要用于控制单个权限检查步骤的上限时间。
 TIMEOUT_SECONDS = 5.0
 
-
-AUTHCHECK_MAX_CONCURRENCY = 30
+AUTHCHECK_MAX_CONCURRENCY = 80
 _AUTH_SEM = asyncio.Semaphore(AUTHCHECK_MAX_CONCURRENCY)
 
 _CTX_INFLIGHT: dict[tuple, asyncio.Task] = {}
@@ -198,18 +197,19 @@ class AuthChecker:
     async def _load_context_impl(
         self, matcher: Matcher, bot: Bot, session: Uninfo, message: UniMsg
     ) -> AuthContext:
-        """加载权限检查上下文数据（原逻辑实现）"""
+        """真实的上下文加载逻辑：只做一次，不做 in-flight 合并（由外层 _load_context 合并）"""
         entity = get_entity_ids(session)
         module = matcher.plugin_name or ""
 
         if not module:
             raise PermissionExemption("Matcher插件名称不存在...")
 
+        # DataAccess 内部已有缓存/超时控制；这里仍保留整体超时保护
         user_dao = DataAccess(UserConsole)
         plugin_dao = DataAccess(PluginInfo)
         group_dao = DataAccess(GroupConsole) if entity.group_id else None
 
-        task_items = [
+        task_items: list[tuple[str, asyncio.Task]] = [
             (
                 "plugin",
                 asyncio.create_task(
@@ -221,7 +221,10 @@ class AuthChecker:
                 "user",
                 asyncio.create_task(
                     user_dao.get_by_func_or_none(
-                        UserConsole.get_user, False, user_id=entity.user_id
+                        UserConsole.get_user,
+                        False,
+                        user_id=entity.user_id,
+                        platform=getattr(session, "platform", None),
                     ),
                     name="authctx:user",
                 ),
@@ -241,7 +244,7 @@ class AuthChecker:
                 )
             )
 
-        task_list = [item[1] for item in task_items]
+        task_list = [t for _, t in task_items]
         start_ts = time.monotonic()
 
         try:
@@ -262,15 +265,17 @@ class AuthChecker:
                 return f"{name}=ok"
 
             states = [_describe(name, task) for name, task in task_items]
-            timeout_msg = (
-                f"加载权限检查所需数据超时，模块: {module}，"
-                f"耗时: {elapsed:.2f}s，状态: {states}"
+            logger.error(
+                f"加载权限检查所需数据超时，模块: {module}，耗时: {elapsed:.2f}s，状态: {states}",
+                LOGGER_COMMAND,
+                session=session,
             )
-            logger.error(timeout_msg, LOGGER_COMMAND, session=session)
             for _, task in task_items:
                 task.cancel()
             raise PermissionExemption("获取权限检查所需数据超时，请稍后再试...")
+
         except IntegrityError:
+            # 用户创建竞争：重试 user / group
             logger.warning(
                 f"检测到重复创建用户，准备重试获取用户，模块: {module}",
                 LOGGER_COMMAND,
@@ -282,7 +287,10 @@ class AuthChecker:
             for attempt in range(3):
                 try:
                     user = await user_dao.get_by_func_or_none(
-                        UserConsole.get_user, False, user_id=entity.user_id
+                        UserConsole.get_user,
+                        False,
+                        user_id=entity.user_id,
+                        platform=getattr(session, "platform", None),
                     )
                     if entity.group_id and group_dao:
                         group = await group_dao.safe_get_or_none(
@@ -325,9 +333,22 @@ class AuthChecker:
             entity=entity,
         )
 
+    async def _run_auth_ban_with_lock(self, context: AuthContext):
+        entity = context.entity
+        lock_key = (entity.user_id, entity.group_id)
+        lock = _BAN_LOCKS[lock_key]
+        async with lock:
+            await auth_ban(
+                context.matcher,
+                context.bot,
+                context.session,
+                context.plugin,
+            )
+
     async def _load_context(
         self, matcher: Matcher, bot: Bot, session: Uninfo, message: UniMsg
     ) -> AuthContext:
+        """实体级 in-flight 合并：同一个实体/插件的 context 加载只做一次"""
         entity = get_entity_ids(session)
         module = matcher.plugin_name or ""
         platform = getattr(session, "platform", "") or ""
@@ -351,23 +372,23 @@ class AuthChecker:
                 _CTX_INFLIGHT[ctx_key] = task
 
         try:
-            return await task
+            # 这里返回的一定是 AuthContext（task 的结果来自 _load_context_impl）
+            return await task  # type: ignore[return-value]
         finally:
             async with _CTX_INFLIGHT_LOCK:
                 if _CTX_INFLIGHT.get(ctx_key) is task:
                     _CTX_INFLIGHT.pop(ctx_key, None)
 
-    async def _run_auth_ban_with_lock(self, context: AuthContext):
-        entity = context.entity
-        lock_key = (entity.user_id, entity.group_id)
-        lock = _BAN_LOCKS[lock_key]
-        async with lock:
-            await auth_ban(
-                context.matcher,
-                context.bot,
-                context.session,
-                context.plugin,
-            )
+    async def _check_impl_with_sem(
+        self,
+        matcher: Matcher,
+        event: Event,
+        bot: Bot,
+        session: Uninfo,
+        message: UniMsg,
+    ) -> bool:
+        async with _AUTH_SEM:
+            return await self._check_impl(matcher, event, bot, session, message)
 
     async def _check_impl(
         self,
