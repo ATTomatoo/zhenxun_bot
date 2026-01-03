@@ -23,7 +23,10 @@ class Model(TortoiseModel):
     """
 
     sem_data: ClassVar[dict[str, dict[str, asyncio.Semaphore]]] = {}
-    _current_locks: ClassVar[dict[int, DbLockType]] = {}  # 跟踪当前协程持有的锁
+    _current_locks: ClassVar[dict[int, DbLockType]] = {}
+
+    invalidate_on_create: ClassVar[bool] = True
+    invalidate_on_save: ClassVar[bool] = True
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -118,7 +121,10 @@ class Model(TortoiseModel):
             # 直接调用父类的_create方法避免触发save的锁
             result = await super().create(using_db=using_db, **kwargs)
             if cache_type := cls.get_cache_type():
-                await CacheRoot.invalidate_cache(cache_type, cls.get_cache_key(result))
+                if getattr(cls, "invalidate_on_create", True):
+                    await CacheRoot.invalidate_cache(
+                        cache_type, cls.get_cache_key(result)
+                    )
             return result
 
     @classmethod
@@ -135,7 +141,8 @@ class Model(TortoiseModel):
         obj, created = result
         if created:
             if cache_type := cls.get_cache_type():
-                await CacheRoot.invalidate_cache(cache_type, cls.get_cache_key(obj))
+                if getattr(cls, "invalidate_on_create", True):
+                    await CacheRoot.invalidate_cache(cache_type, cls.get_cache_key(obj))
         return obj, created
 
     @classmethod
@@ -183,7 +190,8 @@ class Model(TortoiseModel):
                 force_create=force_create,
                 force_update=force_update,
             )
-            if cache_type := getattr(self, "cache_type", None):
+        if cache_type := getattr(self, "cache_type", None):
+            if getattr(self.__class__, "invalidate_on_save", True):
                 await CacheRoot.invalidate_cache(
                     cache_type, self.__class__.get_cache_key(self)
                 )

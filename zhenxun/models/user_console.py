@@ -1,5 +1,6 @@
 import asyncio
 
+from nonebot_plugin_apscheduler import scheduler
 from tortoise import fields
 from tortoise.exceptions import IntegrityError
 from tortoise.functions import Max
@@ -13,11 +14,18 @@ from .user_gold_log import UserGoldLog
 
 
 class UserConsole(Model):
+    invalidate_on_create = False
     _uid_lock: asyncio.Lock = asyncio.Lock()
     _uid_seeded: bool = False
     _uid_next: int = 1
     _uid_last_sync: float = 0.0
     _uid_sync_interval: float = 30.0
+
+    _ensure_lock: asyncio.Lock = asyncio.Lock()
+    _ensure_pending: set[tuple[str, str | None]] = set()
+    _ensure_last_flush: float = 0.0
+    _ensure_flush_interval: float = 0.2  # 200ms
+
     id = fields.IntField(pk=True, generated=True, auto_increment=True)
     """自增id"""
     user_id = fields.CharField(255, unique=True, description="用户id")
@@ -46,6 +54,13 @@ class UserConsole(Model):
     """缓存键字段"""
 
     @classmethod
+    async def get_user_readonly(
+        cls, user_id: str, platform: str | None = None
+    ) -> "UserConsole | None":
+        user = await cls.get_or_none(user_id=user_id)
+        return user
+
+    @classmethod
     async def _seed_uid_once(cls) -> None:
         row = await cls.annotate(max_uid=Max("uid")).values("max_uid")
         db_uid = (row[0]["max_uid"] or 0) if row else 0
@@ -57,10 +72,7 @@ class UserConsole(Model):
         try:
             user, _ = await cls.get_or_create(
                 user_id=user_id,
-                defaults={
-                    "platform": platform,
-                    "uid": await cls.get_new_uid(),
-                },
+                defaults={"platform": platform, "uid": await cls.get_new_uid()},
             )
             return user
         except IntegrityError:
@@ -75,6 +87,42 @@ class UserConsole(Model):
             uid = cls._uid_next
             cls._uid_next += 1
             return uid
+
+    @classmethod
+    async def ensure_user_async(cls, user_id: str, platform: str | None = None) -> None:
+        async with cls._ensure_lock:
+            cls._ensure_pending.add((user_id, platform))
+
+            if len(cls._ensure_pending) >= 200:
+                asyncio.create_task(cls._flush_ensure_pending())
+
+    @classmethod
+    async def _flush_ensure_pending(cls) -> None:
+        async with cls._ensure_lock:
+            pending = list(cls._ensure_pending)
+            cls._ensure_pending.clear()
+
+        if not pending:
+            return
+
+        users = []
+        for user_id, platform in pending:
+            uid = await cls.get_new_uid()
+            users.append(cls(user_id=user_id, platform=platform, uid=uid))
+
+        try:
+            await cls.bulk_create(users, ignore_conflicts=True)
+        except TypeError:
+            for u in users:
+                try:
+                    await cls.create(user_id=u.user_id, platform=u.platform, uid=u.uid)
+                except IntegrityError:
+                    pass
+
+
+@scheduler.scheduled_job("interval", seconds=1)
+async def _flush_users_job():
+    await UserConsole._flush_ensure_pending()
 
     @classmethod
     async def add_gold(
