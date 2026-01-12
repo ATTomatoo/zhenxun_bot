@@ -58,6 +58,18 @@ _AUTH_SEM = asyncio.Semaphore(AUTHCHECK_MAX_CONCURRENCY)
 _CTX_INFLIGHT: dict[tuple, asyncio.Task] = {}
 _CTX_INFLIGHT_LOCK = asyncio.Lock()
 
+_BASE_CTX_TTL_SECONDS = 2.0
+_BASE_CTX_CACHE: dict[tuple, tuple[float, "BaseContext"]] = {}
+_BASE_CTX_CACHE_LOCK = asyncio.Lock()
+_BASE_CTX_INFLIGHT: dict[tuple, asyncio.Task] = {}
+_BASE_CTX_INFLIGHT_LOCK = asyncio.Lock()
+
+_PLUGIN_CACHE_TTL_SECONDS = 5.0
+_PLUGIN_CACHE: dict[str, tuple[float, PluginInfo]] = {}
+_PLUGIN_CACHE_LOCK = asyncio.Lock()
+_PLUGIN_INFLIGHT: dict[str, asyncio.Task] = {}
+_PLUGIN_INFLIGHT_LOCK = asyncio.Lock()
+
 DEDUP_WINDOW_SECONDS = 0.25
 
 _DEDUP_CACHE_MAX = 50000
@@ -71,13 +83,28 @@ _DEDUP_CACHE_LOCK = asyncio.Lock()
 _BAN_LOCKS: dict[tuple[int, int | None], asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
-def _make_dedup_key(matcher: Matcher, bot: Bot, session: Uninfo) -> tuple:
+def _extract_event_token(event: Event) -> Any:
+    """获取事件唯一标识（优先消息ID，其次事件名，再退回对象id）"""
+    for attr in ("message_id", "msg_id", "id", "event_id"):
+        if hasattr(event, attr):
+            val = getattr(event, attr, None)
+            if val:
+                return val
+    try:
+        return event.get_event_name()
+    except Exception:
+        return id(event)
+
+
+def _make_dedup_key(matcher: Matcher, bot: Bot, session: Uninfo, event: Event) -> tuple:
     entity = get_entity_ids(session)
     module = matcher.plugin_name or ""
     platform = getattr(session, "platform", "") or ""
+    event_token = _extract_event_token(event)
     return (
         platform,
         str(bot.self_id),
+        event_token,
         str(module),
         int(entity.user_id),
         int(entity.group_id) if entity.group_id is not None else None,
@@ -138,6 +165,17 @@ class AuthContext:
 
 
 @dataclass
+class BaseContext:
+    """事件级共享上下文：只加载一次，再给各插件复用"""
+
+    user: UserConsole
+    group: GroupConsole | None
+    session: Uninfo
+    bot_id: str
+    entity: Any
+
+
+@dataclass
 class CheckResult:
     """检查结果"""
 
@@ -194,29 +232,44 @@ class AuthChecker:
 
         return result
 
-    async def _load_context_impl(
-        self, matcher: Matcher, bot: Bot, session: Uninfo, message: UniMsg
-    ) -> AuthContext:
-        """真实的上下文加载逻辑：只做一次，不做 in-flight 合并（由外层 _load_context 合并）"""
+    async def _get_plugin_info(self, module: str, plugin_dao: DataAccess) -> PluginInfo:
+        now = time.monotonic()
+        async with _PLUGIN_CACHE_LOCK:
+            cached = _PLUGIN_CACHE.get(module)
+            if cached and cached[0] > now:
+                return cached[1]
+
+        async with _PLUGIN_INFLIGHT_LOCK:
+            task = _PLUGIN_INFLIGHT.get(module)
+            if task is None:
+                task = asyncio.create_task(
+                    plugin_dao.safe_get_or_none(module=module),
+                    name=f"authctx:plugin:{module}",
+                )
+                _PLUGIN_INFLIGHT[module] = task
+
+        try:
+            plugin = await asyncio.wait_for(task, timeout=TIMEOUT_SECONDS)
+            if not plugin:
+                raise PermissionExemption(f"插件:{module} 数据不存在...")
+            async with _PLUGIN_CACHE_LOCK:
+                _PLUGIN_CACHE[module] = (
+                    time.monotonic() + _PLUGIN_CACHE_TTL_SECONDS,
+                    plugin,
+                )
+            return plugin
+        finally:
+            async with _PLUGIN_INFLIGHT_LOCK:
+                if _PLUGIN_INFLIGHT.get(module) is task:
+                    _PLUGIN_INFLIGHT.pop(module, None)
+
+    async def _load_base_context_impl(self, bot: Bot, session: Uninfo) -> BaseContext:
         entity = get_entity_ids(session)
-        module = matcher.plugin_name or ""
 
-        if not module:
-            raise PermissionExemption("Matcher插件名称不存在...")
-
-        # DataAccess 内部已有缓存/超时控制；这里仍保留整体超时保护
         user_dao = DataAccess(UserConsole)
-        plugin_dao = DataAccess(PluginInfo)
         group_dao = DataAccess(GroupConsole) if entity.group_id else None
 
         task_items: list[tuple[str, asyncio.Task]] = [
-            (
-                "plugin",
-                asyncio.create_task(
-                    plugin_dao.safe_get_or_none(module=module),
-                    name="authctx:plugin",
-                ),
-            ),
             (
                 "user",
                 asyncio.create_task(
@@ -228,7 +281,7 @@ class AuthChecker:
                     ),
                     name="authctx:user",
                 ),
-            ),
+            )
         ]
 
         if entity.group_id and group_dao:
@@ -266,22 +319,20 @@ class AuthChecker:
 
             states = [_describe(name, task) for name, task in task_items]
             logger.error(
-                f"加载权限检查所需数据超时，模块: {module}，耗时: {elapsed:.2f}s，状态: {states}",
+                f"加载基础权限数据超时，耗时: {elapsed:.2f}s，状态: {states}",
                 LOGGER_COMMAND,
                 session=session,
             )
             for _, task in task_items:
                 task.cancel()
-            raise PermissionExemption("获取权限检查所需数据超时，请稍后再试...")
+            raise PermissionExemption("获取基础权限数据超时，请稍后再试...")
 
         except IntegrityError:
-            # 用户创建竞争：重试 user / group
             logger.warning(
-                f"检测到重复创建用户，准备重试获取用户，模块: {module}",
+                "检测到重复创建用户，准备重试获取用户",
                 LOGGER_COMMAND,
                 session=session,
             )
-            plugin = await plugin_dao.safe_get_or_none(module=module)
             user = None
             group = None
             for attempt in range(3):
@@ -300,7 +351,7 @@ class AuthChecker:
                 except IntegrityError as e:
                     if attempt == 2:
                         logger.error(
-                            f"多次尝试创建用户仍然出现唯一约束冲突，模块: {module}",
+                            "多次尝试创建用户仍然出现唯一约束冲突",
                             LOGGER_COMMAND,
                             session=session,
                             e=e,
@@ -308,29 +359,96 @@ class AuthChecker:
                         raise PermissionExemption("重复创建用户，请稍后再试...") from e
                     await asyncio.sleep(0.5 * (attempt + 1))
         else:
-            plugin = results[0]
-            user = results[1]
-            group = results[2] if len(results) > 2 else None
+            user = results[0]
+            group = results[1] if len(results) > 1 else None
 
-        if not plugin:
-            raise PermissionExemption(f"插件:{module} 数据不存在...")
+        if not user:
+            raise PermissionExemption("用户数据不存在...")
+
+        return BaseContext(
+            user=user,
+            group=group,
+            bot_id=str(bot.self_id),
+            session=session,
+            entity=entity,
+        )
+
+    async def _get_base_context(
+        self, bot: Bot, session: Uninfo, event: Event
+    ) -> BaseContext:
+        entity = get_entity_ids(session)
+        platform = getattr(session, "platform", "") or ""
+        event_token = _extract_event_token(event)
+        base_key = (
+            platform,
+            str(bot.self_id),
+            event_token,
+            int(entity.user_id),
+            int(entity.group_id) if entity.group_id is not None else None,
+            int(entity.channel_id) if entity.channel_id is not None else None,
+        )
+
+        now = time.monotonic()
+        async with _BASE_CTX_CACHE_LOCK:
+            cached = _BASE_CTX_CACHE.get(base_key)
+            if cached and cached[0] > now:
+                return cached[1]
+
+        async with _BASE_CTX_INFLIGHT_LOCK:
+            task = _BASE_CTX_INFLIGHT.get(base_key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._load_base_context_impl(bot, session),
+                    name=f"authctx:base:{base_key}",
+                )
+                _BASE_CTX_INFLIGHT[base_key] = task
+
+        try:
+            base_ctx = await asyncio.wait_for(task, timeout=TIMEOUT_SECONDS)
+            async with _BASE_CTX_CACHE_LOCK:
+                _BASE_CTX_CACHE[base_key] = (
+                    time.monotonic() + _BASE_CTX_TTL_SECONDS,
+                    base_ctx,
+                )
+            return base_ctx
+        finally:
+            async with _BASE_CTX_INFLIGHT_LOCK:
+                if _BASE_CTX_INFLIGHT.get(base_key) is task:
+                    _BASE_CTX_INFLIGHT.pop(base_key, None)
+
+    async def _load_context_impl(
+        self,
+        matcher: Matcher,
+        bot: Bot,
+        session: Uninfo,
+        event: Event,
+        message: UniMsg,
+    ) -> AuthContext:
+        """真实的上下文加载逻辑：插件只拉自己的数据，事件级公共数据复用"""
+        module = matcher.plugin_name or ""
+
+        if not module:
+            raise PermissionExemption("Matcher插件名称不存在...")
+
+        base_ctx = await self._get_base_context(bot, session, event)
+        plugin_dao = DataAccess(PluginInfo)
+        plugin = await self._get_plugin_info(module, plugin_dao)
+
         if plugin.plugin_type == PluginType.HIDDEN:
             raise PermissionExemption(
                 f"插件: {plugin.name}:{plugin.module} 为HIDDEN..."
             )
-        if not user:
-            raise PermissionExemption("用户数据不存在...")
 
         return AuthContext(
             plugin=plugin,
-            user=user,
-            group=group,
+            user=base_ctx.user,
+            group=base_ctx.group,
             bot_id=bot.self_id,
             session=session,
             matcher=matcher,
             bot=bot,
             message=message,
-            entity=entity,
+            entity=base_ctx.entity,
         )
 
     async def _run_auth_ban_with_lock(self, context: AuthContext):
@@ -346,7 +464,12 @@ class AuthChecker:
             )
 
     async def _load_context(
-        self, matcher: Matcher, bot: Bot, session: Uninfo, message: UniMsg
+        self,
+        matcher: Matcher,
+        bot: Bot,
+        session: Uninfo,
+        event: Event,
+        message: UniMsg,
     ) -> AuthContext:
         """实体级 in-flight 合并：同一个实体/插件的 context 加载只做一次"""
         entity = get_entity_ids(session)
@@ -356,6 +479,7 @@ class AuthChecker:
         ctx_key = (
             platform,
             str(bot.self_id),
+            _extract_event_token(event),
             str(module),
             int(entity.user_id),
             int(entity.group_id) if entity.group_id is not None else None,
@@ -366,7 +490,7 @@ class AuthChecker:
             task = _CTX_INFLIGHT.get(ctx_key)
             if task is None:
                 task = asyncio.create_task(
-                    self._load_context_impl(matcher, bot, session, message),
+                    self._load_context_impl(matcher, bot, session, event, message),
                     name=f"authctx:{ctx_key}",
                 )
                 _CTX_INFLIGHT[ctx_key] = task
@@ -407,7 +531,7 @@ class AuthChecker:
             bot_filter(session)
 
             ctx_start = time.time()
-            context = await self._load_context(matcher, bot, session, message)
+            context = await self._load_context(matcher, bot, session, event, message)
             hook_times["load_context"] = f"{time.time() - ctx_start:.3f}s"
 
             critical_checks = [
@@ -569,7 +693,7 @@ class AuthChecker:
         session: Uninfo,
         message: UniMsg,
     ):
-        key = _make_dedup_key(matcher, bot, session)
+        key = _make_dedup_key(matcher, bot, session, event)
 
         cached_ignored = await _dedup_cache_get(key)
         if cached_ignored is not None:
@@ -623,3 +747,10 @@ class AuthChecker:
 
 
 _auth_checker = AuthChecker()
+
+
+async def auth(
+    matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: UniMsg
+):
+    """对外暴露的权限检查入口"""
+    await _auth_checker.check(matcher, event, bot, session, message)
