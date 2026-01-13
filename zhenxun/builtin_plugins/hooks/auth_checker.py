@@ -58,7 +58,7 @@ _AUTH_SEM = asyncio.Semaphore(AUTHCHECK_MAX_CONCURRENCY)
 _CTX_INFLIGHT: dict[tuple, asyncio.Task] = {}
 _CTX_INFLIGHT_LOCK = asyncio.Lock()
 
-_BASE_CTX_TTL_SECONDS = 2.0
+_BASE_CTX_TTL_SECONDS = 5.0
 _BASE_CTX_CACHE: dict[tuple, tuple[float, "BaseContext"]] = {}
 _BASE_CTX_CACHE_LOCK = asyncio.Lock()
 _BASE_CTX_INFLIGHT: dict[tuple, asyncio.Task] = {}
@@ -188,6 +188,32 @@ class CheckResult:
 class AuthChecker:
     """优化的权限检查器"""
 
+    @staticmethod
+    def _default_gold() -> int:
+        try:
+            return int(UserConsole._meta.fields_map["gold"].default)  # type: ignore[attr-defined]
+        except Exception:
+            return 100
+
+    async def _build_default_base_ctx(self, bot: Bot, session: Uninfo) -> BaseContext:
+        entity = get_entity_ids(session)
+        await UserConsole.ensure_user_async(
+            entity.user_id, getattr(session, "platform", None)
+        )
+        user = UserConsole(
+            user_id=str(entity.user_id),
+            platform=getattr(session, "platform", None),
+            uid=-1,
+            gold=self._default_gold(),
+        )
+        return BaseContext(
+            user=user,
+            group=None,
+            bot_id=str(bot.self_id),
+            session=session,
+            entity=entity,
+        )
+
     async def _execute_check(
         self,
         check_func: Callable,
@@ -305,26 +331,12 @@ class AuthChecker:
             )
         except asyncio.TimeoutError:
             elapsed = time.monotonic() - start_ts
-
-            def _describe(name: str, task: asyncio.Task) -> str:
-                if not task.done():
-                    return f"{name}=pending"
-                if task.cancelled():
-                    return f"{name}=cancelled"
-                exc = task.exception()
-                if exc:
-                    return f"{name}=error({exc})"
-                return f"{name}=ok"
-
-            states = [_describe(name, task) for name, task in task_items]
-            logger.error(
-                f"加载基础权限数据超时，耗时: {elapsed:.2f}s，状态: {states}",
+            logger.warning(
+                f"加载基础权限数据超时，耗时: {elapsed:.2f}s，降级为默认上下文",
                 LOGGER_COMMAND,
                 session=session,
             )
-            for _, task in task_items:
-                task.cancel()
-            raise PermissionExemption("获取基础权限数据超时，请稍后再试...")
+            return await self._build_default_base_ctx(bot, session)
 
         except IntegrityError:
             logger.warning(
@@ -362,21 +374,7 @@ class AuthChecker:
             group = results[1] if len(results) > 1 else None
 
         if not user:
-            # 新用户：避免同步写库，先放入批量创建队列，并提供内存默认值
-            await UserConsole.ensure_user_async(
-                entity.user_id, getattr(session, "platform", None)
-            )
-            # 获取字段默认值，兜底为 100
-            try:
-                default_gold = UserConsole._meta.fields_map["gold"].default  # type: ignore[attr-defined]
-            except Exception:
-                default_gold = 100
-            user = UserConsole(
-                user_id=str(entity.user_id),
-                platform=getattr(session, "platform", None),
-                uid=-1,
-                gold=default_gold,
-            )
+            return await self._build_default_base_ctx(bot, session)
 
         return BaseContext(
             user=user,
@@ -417,16 +415,24 @@ class AuthChecker:
 
         try:
             base_ctx = await asyncio.wait_for(task, timeout=TIMEOUT_SECONDS)
-            async with _BASE_CTX_CACHE_LOCK:
-                _BASE_CTX_CACHE[base_key] = (
-                    time.monotonic() + _BASE_CTX_TTL_SECONDS,
-                    base_ctx,
-                )
-            return base_ctx
+        except asyncio.TimeoutError:
+            logger.warning(
+                "基础上下文加载 wait_for 超时，降级为默认上下文",
+                LOGGER_COMMAND,
+                session=session,
+            )
+            base_ctx = await self._build_default_base_ctx(bot, session)
         finally:
             async with _BASE_CTX_INFLIGHT_LOCK:
                 if _BASE_CTX_INFLIGHT.get(base_key) is task:
                     _BASE_CTX_INFLIGHT.pop(base_key, None)
+
+        async with _BASE_CTX_CACHE_LOCK:
+            _BASE_CTX_CACHE[base_key] = (
+                time.monotonic() + _BASE_CTX_TTL_SECONDS,
+                base_ctx,
+            )
+        return base_ctx
 
     async def _load_context_impl(
         self,
