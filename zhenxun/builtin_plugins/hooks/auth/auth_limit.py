@@ -8,7 +8,6 @@ from pydantic import BaseModel
 
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.plugin_limit import PluginLimit
-from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import LimitWatchType, PluginLimitType
 from zhenxun.utils.limiters import CountLimiter, FreqLimiter, UserBlockLimiter
@@ -21,6 +20,8 @@ from .config import LOGGER_COMMAND, WARNING_THRESHOLD
 from .exception import SkipPluginException
 
 driver = nonebot.get_driver()
+LIMIT_CHECK_TIMEOUT_SECONDS = 0.5
+LIMIT_MESSAGE_TIMEOUT_SECONDS = 0.2
 
 
 @PriorityLifecycle.on_startup(priority=5)
@@ -40,30 +41,37 @@ class Limit(BaseModel):
 class LimitManager:
     add_module: ClassVar[list] = []
     last_update_time: ClassVar[float] = 0
-    update_interval: ClassVar[float] = 6000  # 1小时更新一次
-    is_updating: ClassVar[bool] = False  # 防止并发更新
+    update_interval: ClassVar[float] = 6000  # refresh every hour
+    is_updating: ClassVar[bool] = False  # guard concurrent refresh
 
     cd_limit: ClassVar[dict[str, Limit]] = {}
     block_limit: ClassVar[dict[str, Limit]] = {}
     count_limit: ClassVar[dict[str, Limit]] = {}
 
-    # 模块限制缓存，避免频繁查询数据库
     module_limit_cache: ClassVar[dict[str, tuple[float, list[PluginLimit]]]] = {}
-    module_cache_ttl: ClassVar[float] = 60  # 模块缓存有效期（秒）
+    module_cache_ttl: ClassVar[float] = 60  # seconds
 
     @classmethod
     async def init_limit(cls):
-        """初始化限制"""
         cls.last_update_time = time.time()
         try:
-            await asyncio.wait_for(cls.update_limits(), timeout=DB_TIMEOUT_SECONDS * 2)
+            limit_list = await asyncio.wait_for(
+                PluginLimit.filter(status=True).all(),
+                timeout=LIMIT_CHECK_TIMEOUT_SECONDS,
+            )
         except asyncio.TimeoutError:
-            logger.error("初始化限制超时", LOGGER_COMMAND)
+            logger.error("init plugin limit timeout", LOGGER_COMMAND)
+            return
+
+        cls.add_module = []
+        cls.cd_limit = {}
+        cls.block_limit = {}
+        cls.count_limit = {}
+        for limit in limit_list:
+            cls.add_limit(limit)
 
     @classmethod
     async def update_limits(cls):
-        """更新限制信息"""
-        # 防止并发更新
         if cls.is_updating:
             return
 
@@ -72,36 +80,32 @@ class LimitManager:
             start_time = time.time()
             try:
                 limit_list = await asyncio.wait_for(
-                    PluginLimit.filter(status=True).all(), timeout=DB_TIMEOUT_SECONDS
+                    PluginLimit.filter(status=True).all(),
+                    timeout=LIMIT_CHECK_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
-                logger.error("查询限制信息超时", LOGGER_COMMAND)
-                cls.is_updating = False
+                logger.error("query plugin limit timeout", LOGGER_COMMAND)
                 return
 
-            # 清空旧数据
             cls.add_module = []
             cls.cd_limit = {}
             cls.block_limit = {}
             cls.count_limit = {}
-            # 添加新数据
             for limit in limit_list:
                 cls.add_limit(limit)
 
             cls.last_update_time = time.time()
             elapsed = time.time() - start_time
-            if elapsed > WARNING_THRESHOLD:  # 记录耗时超过500ms的更新
-                logger.warning(f"更新限制信息耗时: {elapsed:.3f}s", LOGGER_COMMAND)
+            if elapsed > WARNING_THRESHOLD:
+                logger.warning(
+                    f"update plugin limit cost: {elapsed:.3f}s",
+                    LOGGER_COMMAND,
+                )
         finally:
             cls.is_updating = False
 
     @classmethod
     def add_limit(cls, limit: PluginLimit):
-        """添加限制
-
-        参数:
-            limit: PluginLimit
-        """
         if limit.module not in cls.add_module:
             cls.add_module.append(limit.module)
             if limit.limit_type == PluginLimitType.BLOCK:
@@ -121,14 +125,6 @@ class LimitManager:
     def unblock(
         cls, module: str, user_id: str, group_id: str | None, channel_id: str | None
     ):
-        """解除插件block
-
-        参数:
-            module: 模块名
-            user_id: 用户id
-            group_id: 群组id
-            channel_id: 频道id
-        """
         if limit_model := cls.block_limit.get(module):
             limit = limit_model.limit
             limiter: UserBlockLimiter = limit_model.limiter  # type: ignore
@@ -136,7 +132,7 @@ class LimitManager:
             if group_id and limit.watch_type == LimitWatchType.GROUP:
                 key_type = channel_id or group_id
             logger.debug(
-                f"解除对象: {key_type} 的block限制",
+                f"unblock target: {key_type}",
                 LOGGER_COMMAND,
                 session=user_id,
                 group_id=group_id,
@@ -145,42 +141,30 @@ class LimitManager:
 
     @classmethod
     async def get_module_limits(cls, module: str) -> list[PluginLimit]:
-        """获取模块的限制信息，使用缓存减少数据库查询
-
-        参数:
-            module: 模块名
-
-        返回:
-            list[PluginLimit]: 限制列表
-        """
         current_time = time.time()
 
-        # 检查缓存
         if module in cls.module_limit_cache:
             cache_time, limits = cls.module_limit_cache[module]
             if current_time - cache_time < cls.module_cache_ttl:
                 return limits
 
-        # 缓存不存在或已过期，从数据库查询
         try:
             start_time = time.time()
             limits = await asyncio.wait_for(
                 PluginLimit.filter(module=module, status=True).all(),
-                timeout=DB_TIMEOUT_SECONDS,
+                timeout=LIMIT_CHECK_TIMEOUT_SECONDS,
             )
             elapsed = time.time() - start_time
-            if elapsed > WARNING_THRESHOLD:  # 记录耗时超过500ms的查询
+            if elapsed > WARNING_THRESHOLD:
                 logger.warning(
-                    f"查询模块限制信息耗时: {elapsed:.3f}s, 模块: {module}",
+                    f"query module limit cost: {elapsed:.3f}s, module: {module}",
                     LOGGER_COMMAND,
                 )
 
-            # 更新缓存
             cls.module_limit_cache[module] = (current_time, limits)
             return limits
         except asyncio.TimeoutError:
-            logger.error(f"查询模块限制信息超时: {module}", LOGGER_COMMAND)
-            # 超时时返回空列表，避免阻塞
+            logger.error(f"query module limit timeout: {module}", LOGGER_COMMAND)
             return []
 
     @classmethod
@@ -191,34 +175,17 @@ class LimitManager:
         group_id: str | None,
         channel_id: str | None,
     ):
-        """检测限制
-
-        参数:
-            module: 模块名
-            user_id: 用户id
-            group_id: 群组id
-            channel_id: 频道id
-
-        异常:
-            IgnoredException: IgnoredException
-        """
         start_time = time.time()
 
-        # 定期更新全局限制信息
         if (
             time.time() - cls.last_update_time > cls.update_interval
             and not cls.is_updating
         ):
-            # 使用异步任务更新，避免阻塞当前请求
             asyncio.create_task(cls.update_limits())  # noqa: RUF006
 
-        # 如果模块不在已加载列表中，只加载该模块的限制
         if module not in cls.add_module:
-            limits = await cls.get_module_limits(module)
-            for limit in limits:
-                cls.add_limit(limit)
+            return
 
-        # 检查各种限制
         try:
             if limit_model := cls.cd_limit.get(module):
                 await cls.__check(limit_model, user_id, group_id, channel_id)
@@ -227,15 +194,31 @@ class LimitManager:
             if limit_model := cls.count_limit.get(module):
                 await cls.__check(limit_model, user_id, group_id, channel_id)
         finally:
-            # 记录总执行时间
             elapsed = time.time() - start_time
-            if elapsed > WARNING_THRESHOLD:  # 记录耗时超过500ms的检查
+            if elapsed > WARNING_THRESHOLD:
                 logger.warning(
-                    f"限制检查耗时: {elapsed:.3f}s, 模块: {module}",
+                    f"limit check cost: {elapsed:.3f}s, module: {module}",
                     LOGGER_COMMAND,
                     session=user_id,
                     group_id=group_id,
                 )
+
+
+    @staticmethod
+    async def _send_limit_message(
+        result: str,
+        format_kwargs: dict[str, str],
+        module: str,
+    ) -> None:
+        try:
+            await asyncio.wait_for(
+                MessageUtils.build_message(result, format_args=format_kwargs).send(),
+                timeout=LIMIT_MESSAGE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"limit message timeout: {module}", LOGGER_COMMAND)
+        except Exception as e:
+            logger.error(f"limit message error: {module}: {e}", LOGGER_COMMAND)
 
     @classmethod
     async def __check(
@@ -275,15 +258,9 @@ class LimitManager:
                     left_time = limiter.left_time(key_type)
                     cd_str = TimeUtils.format_duration(left_time)
                     format_kwargs = {"cd": cd_str}
-                try:
-                    await asyncio.wait_for(
-                        MessageUtils.build_message(
-                            limit.result, format_args=format_kwargs
-                        ).send(),
-                        timeout=DB_TIMEOUT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
-                    logger.error(f"发送限制消息超时: {limit.module}", LOGGER_COMMAND)
+                asyncio.create_task(
+                    cls._send_limit_message(limit.result, format_kwargs, limit.module)
+                )
             raise SkipPluginException(
                 f"{limit.module}({limit.limit_type}) 正在限制中..."
             )
@@ -315,7 +292,7 @@ async def auth_limit(plugin: PluginInfo, session: Uninfo):
             LimitManager.check(
                 plugin.module, entity.user_id, entity.group_id, entity.channel_id
             ),
-            timeout=DB_TIMEOUT_SECONDS * 2,  # 给予更长的超时时间
+            timeout=LIMIT_CHECK_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
         logger.error(f"检查插件限制超时: {plugin.module}", LOGGER_COMMAND)

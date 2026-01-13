@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from nonebot_plugin_apscheduler import scheduler
 from tortoise import fields
@@ -104,6 +105,7 @@ class UserConsole(UserOpsMixin, Model):
     _ensure_pending: set[tuple[str, str | None]] = set()
     _ensure_last_flush: float = 0.0
     _ensure_flush_interval: float = 0.2  # 200ms
+    _ensure_flush_inflight: bool = False
 
     id = fields.IntField(pk=True, generated=True, auto_increment=True)
     """自增id"""
@@ -168,46 +170,70 @@ class UserConsole(UserOpsMixin, Model):
 
     @classmethod
     async def ensure_user_async(cls, user_id: str, platform: str | None = None) -> None:
+        should_flush = False
         async with cls._ensure_lock:
             cls._ensure_pending.add((user_id, platform))
 
             if len(cls._ensure_pending) >= 200:
-                asyncio.create_task(cls._flush_ensure_pending())
+                now = time.monotonic()
+                if now - cls._ensure_last_flush >= cls._ensure_flush_interval:
+                    cls._ensure_last_flush = now
+                    should_flush = True
+
+        if should_flush:
+            await cls._flush_ensure_pending()
 
     @classmethod
     async def _flush_ensure_pending(cls) -> None:
         async with cls._ensure_lock:
-            pending = list(cls._ensure_pending)
-            cls._ensure_pending.clear()
-
-        if not pending:
-            return
-
-        # 预先批量分配 UID，避免在循环中多次获取全局锁
-        async with cls._uid_lock:
-            if not cls._uid_seeded:
-                await cls._seed_uid_once()
-            start_uid = cls._uid_next
-            cls._uid_next += len(pending)
-
-        users = []
-        for idx, (user_id, platform) in enumerate(pending):
-            users.append(cls(user_id=user_id, platform=platform, uid=start_uid + idx))
+            if cls._ensure_flush_inflight:
+                return
+            cls._ensure_flush_inflight = True
 
         try:
-            await cls.bulk_create(users, ignore_conflicts=True)
-        except TypeError:
-            for u in users:
-                try:
-                    await cls.create(user_id=u.user_id, platform=u.platform, uid=u.uid)
-                except IntegrityError:
-                    pass
+            while True:
+                async with cls._ensure_lock:
+                    pending = list(cls._ensure_pending)
+                    cls._ensure_pending.clear()
+                    cls._ensure_last_flush = time.monotonic()
 
+                if not pending:
+                    break
 
-@scheduler.scheduled_job("interval", seconds=1)
-async def _flush_users_job():
-    await UserConsole._flush_ensure_pending()
+                for start in range(0, len(pending), 200):
+                    batch = pending[start : start + 200]
 
+                    async with cls._uid_lock:
+                        if not cls._uid_seeded:
+                            await cls._seed_uid_once()
+                        start_uid = cls._uid_next
+                        cls._uid_next += len(batch)
+
+                    users = []
+                    for idx, (user_id, platform) in enumerate(batch):
+                        users.append(
+                            cls(
+                                user_id=user_id,
+                                platform=platform,
+                                uid=start_uid + idx,
+                            )
+                        )
+
+                    try:
+                        await cls.bulk_create(users, ignore_conflicts=True)
+                    except TypeError:
+                        for u in users:
+                            try:
+                                await cls.create(
+                                    user_id=u.user_id,
+                                    platform=u.platform,
+                                    uid=u.uid,
+                                )
+                            except IntegrityError:
+                                pass
+        finally:
+            async with cls._ensure_lock:
+                cls._ensure_flush_inflight = False
 
     @classmethod
     async def _run_script(cls):
@@ -215,3 +241,8 @@ async def _flush_users_job():
             "CREATE INDEX idx_user_console_user_id ON user_console(user_id);",
             "CREATE INDEX idx_user_console_uid ON user_console(uid);",
         ]
+
+
+@scheduler.scheduled_job("interval", seconds=1)
+async def _flush_users_job():
+    await UserConsole._flush_ensure_pending()

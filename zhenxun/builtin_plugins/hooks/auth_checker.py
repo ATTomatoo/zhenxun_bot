@@ -58,7 +58,7 @@ _AUTH_SEM = asyncio.Semaphore(AUTHCHECK_MAX_CONCURRENCY)
 _CTX_INFLIGHT: dict[tuple, asyncio.Task] = {}
 _CTX_INFLIGHT_LOCK = asyncio.Lock()
 
-_BASE_CTX_TTL_SECONDS = 5.0
+_BASE_CTX_TTL_SECONDS = 10.0
 _BASE_CTX_CACHE: dict[tuple, tuple[float, "BaseContext"]] = {}
 _BASE_CTX_CACHE_LOCK = asyncio.Lock()
 _BASE_CTX_INFLIGHT: dict[tuple, asyncio.Task] = {}
