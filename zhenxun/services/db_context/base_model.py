@@ -211,11 +211,11 @@ class Model(TortoiseModel):
         cls,
         *args,
         using_db: BaseDBAsyncClient | None = None,
-        clean_duplicates: bool = True,
+        clean_duplicates: bool = False,
         **kwargs: Any,
     ) -> Self | None:
         """安全地获取一条记录或None，处理存在多个记录时返回最新的那个
-        注意，默认会删除重复的记录，仅保留最新的
+        注意，默认不清理重复记录（避免高并发下额外 DB 压力）
 
         参数:
             *args: 查询参数
@@ -235,56 +235,49 @@ class Model(TortoiseModel):
                     source="DataBaseModel",
                 )
             except MultipleObjectsReturned:
-                # 如果出现多个记录的情况，进行特殊处理
+                # 如果出现多个记录，优先返回最新的一条，避免一次性加载/删除大量记录
                 logger.warning(
                     f"{cls.__name__} safe_get_or_none 发现多个记录: {kwargs}",
                     LOG_COMMAND,
                 )
 
-                # 查询所有匹配记录
-                records = await with_db_timeout(
-                    cls.filter(*args, **kwargs).all(),
-                    operation=f"{cls.__name__}.filter.all",
+                latest = await with_db_timeout(
+                    cls.filter(*args, **kwargs).order_by("-id").first(),
+                    operation=f"{cls.__name__}.filter.order_by.first",
                     source="DataBaseModel",
                 )
 
-                if not records:
-                    return None
-
-                # 如果需要清理重复记录
-                if clean_duplicates and hasattr(records[0], "id"):
-                    # 按 id 排序
-                    records = sorted(
-                        records, key=lambda x: getattr(x, "id", 0), reverse=True
-                    )
-                    for record in records[1:]:
+                # 可选异步清理重复记录，避免阻塞当前请求
+                if clean_duplicates and latest and hasattr(latest, "id"):
+                    async def _cleanup():
                         try:
-                            await with_db_timeout(
-                                record.delete(),
-                                operation=f"{cls.__name__}.delete_duplicate",
+                            dup_ids = await with_db_timeout(
+                                cls.filter(*args, **kwargs)
+                                .exclude(id=latest.id)
+                                .values_list("id", flat=True),
+                                operation=f"{cls.__name__}.cleanup.values_list",
                                 source="DataBaseModel",
                             )
-                            logger.info(
-                                f"{cls.__name__} 删除重复记录:"
-                                f" id={getattr(record, 'id', None)}",
+                            for dup_id in dup_ids or []:
+                                try:
+                                    await with_db_timeout(
+                                        cls.filter(id=dup_id).delete(),
+                                        operation=f"{cls.__name__}.cleanup.delete",
+                                        source="DataBaseModel",
+                                    )
+                                except Exception as del_e:
+                                    logger.error(
+                                        f"删除重复记录失败: {cls.__name__} id={dup_id}, {del_e}",
+                                        LOG_COMMAND,
+                                    )
+                        except Exception as e:
+                            logger.error(
+                                f"{cls.__name__} 异步清理重复记录失败: {e}",
                                 LOG_COMMAND,
                             )
-                        except Exception as del_e:
-                            logger.error(f"删除重复记录失败: {del_e}")
-                    return records[0]
-                # 如果不需要清理或没有 id 字段，则返回最新的记录
-                if hasattr(cls, "id"):
-                    return await with_db_timeout(
-                        cls.filter(*args, **kwargs).order_by("-id").first(),
-                        operation=f"{cls.__name__}.filter.order_by.first",
-                        source="DataBaseModel",
-                    )
-                # 如果没有 id 字段，则返回第一个记录
-                return await with_db_timeout(
-                    cls.filter(*args, **kwargs).first(),
-                    operation=f"{cls.__name__}.filter.first",
-                    source="DataBaseModel",
-                )
+                    asyncio.create_task(_cleanup())
+
+                return latest
         except asyncio.TimeoutError:
             logger.error(
                 f"数据库操作超时: {cls.__name__}.safe_get_or_none", LOG_COMMAND

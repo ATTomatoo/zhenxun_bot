@@ -269,13 +269,12 @@ class AuthChecker:
         user_dao = DataAccess(UserConsole)
         group_dao = DataAccess(GroupConsole) if entity.group_id else None
 
+        # 避免新用户在权限热路径写库：先用只读查询，必要时异步批量创建
         task_items: list[tuple[str, asyncio.Task]] = [
             (
                 "user",
                 asyncio.create_task(
-                    user_dao.get_by_func_or_none(
-                        UserConsole.get_user,
-                        False,
+                    user_dao.safe_get_or_none(
                         user_id=entity.user_id,
                         platform=getattr(session, "platform", None),
                     ),
@@ -363,7 +362,21 @@ class AuthChecker:
             group = results[1] if len(results) > 1 else None
 
         if not user:
-            raise PermissionExemption("用户数据不存在...")
+            # 新用户：避免同步写库，先放入批量创建队列，并提供内存默认值
+            await UserConsole.ensure_user_async(
+                entity.user_id, getattr(session, "platform", None)
+            )
+            # 获取字段默认值，兜底为 100
+            try:
+                default_gold = UserConsole._meta.fields_map["gold"].default  # type: ignore[attr-defined]
+            except Exception:
+                default_gold = 100
+            user = UserConsole(
+                user_id=str(entity.user_id),
+                platform=getattr(session, "platform", None),
+                uid=-1,
+                gold=default_gold,
+            )
 
         return BaseContext(
             user=user,
@@ -378,11 +391,10 @@ class AuthChecker:
     ) -> BaseContext:
         entity = get_entity_ids(session)
         platform = getattr(session, "platform", "") or ""
-        event_token = _extract_event_token(event)
+        # 事件无关的基础上下文缓存：同一用户/群在短时间内复用，降低 DB 压力
         base_key = (
             platform,
             str(bot.self_id),
-            event_token,
             int(entity.user_id),
             int(entity.group_id) if entity.group_id is not None else None,
             int(entity.channel_id) if entity.channel_id is not None else None,

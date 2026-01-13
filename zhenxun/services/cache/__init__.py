@@ -286,7 +286,8 @@ class CacheManager:
 
     _invalidate_ts: ClassVar[dict[tuple[str, str | None], float]] = {}
     _invalidate_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
-    _global_all_users_throttle: ClassVar[float] = 2.0
+    # 降低全局用户缓存的失效频率，避免高并发下反复触发造成回源风暴
+    _global_all_users_throttle: ClassVar[float] = 5.0
     _default_throttle: ClassVar[float] = 0.5
     _instance: ClassVar["CacheManager | None"] = None
     _cache_backend: BaseCache | AioCache | None = None
