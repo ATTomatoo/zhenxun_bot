@@ -337,6 +337,13 @@ class AuthChecker:
                 session=session,
             )
             return await self._build_default_base_ctx(bot, session)
+        except asyncio.CancelledError:
+            logger.warning(
+                "加载基础权限数据被取消，降级为默认上下文",
+                LOGGER_COMMAND,
+                session=session,
+            )
+            return await self._build_default_base_ctx(bot, session)
 
         except IntegrityError:
             logger.warning(

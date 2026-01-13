@@ -30,7 +30,7 @@ Config.add_plugin_config(
 BAN_CHECK_TIMEOUT_SECONDS = 0.30
 BAN_QUERY_TIMEOUT_SECONDS = 0.30
 
-BAN_QUERY_MAX_CONCURRENCY = 80
+BAN_QUERY_MAX_CONCURRENCY = 30
 _BAN_QUERY_SEM = asyncio.Semaphore(BAN_QUERY_MAX_CONCURRENCY)
 
 BAN_CHECK_MAX_CONCURRENCY = 120
@@ -198,6 +198,12 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
         logger.error(
             f"用户/群 ban 查询超时(>{BAN_QUERY_TIMEOUT_SECONDS:.2f}s): user_id={user_id}, group_id={group_id}",
             LOGGER_COMMAND,
+        )
+        await _ban_cache_set(key, 0, ttl=BAN_TIMEOUT_NEG_TTL_SECONDS)
+        return 0
+    except Exception as e:
+        logger.error(
+            f"用户/群 ban 查询异常: {e}", LOGGER_COMMAND, user_id=user_id, group_id=group_id
         )
         await _ban_cache_set(key, 0, ttl=BAN_TIMEOUT_NEG_TTL_SECONDS)
         return 0

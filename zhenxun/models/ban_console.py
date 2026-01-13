@@ -1,12 +1,10 @@
 import asyncio
 import time
 from typing import ClassVar
-from typing_extensions import Self
 
 from tortoise import fields
-from tortoise.expressions import Q
+from typing_extensions import Self
 
-from zhenxun.services.cache import CacheRoot
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.db_context import Model
 from zhenxun.services.log import logger
@@ -32,6 +30,8 @@ class BanConsole(Model):
     operator = fields.CharField(255)
     """使用Ban命令的用户"""
     _inflight: ClassVar[dict[tuple[str | None, str | None], asyncio.Future]] = {}
+    _none_cache: ClassVar[dict[tuple[str | None, str | None], float]] = {}
+    _none_cache_ttl: ClassVar[float] = 5.0
 
     class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "ban_console"
@@ -43,10 +43,8 @@ class BanConsole(Model):
     """缓存类型"""
     cache_key_field = ("user_id", "group_id")
     """缓存键字段"""
-    lock_fields: ClassVar[dict[DbLockType, tuple[str, str]]] = {
-        DbLockType.CREATE: ("user_id", "group_id"),
-        DbLockType.UPSERT: ("user_id", "group_id"),
-    }
+    enable_lock: ClassVar[list[DbLockType]] = [DbLockType.CREATE, DbLockType.UPSERT]
+    """开启锁"""
 
     @classmethod
     async def _get_data(cls, user_id: str | None, group_id: str | None) -> Self | None:
@@ -54,6 +52,12 @@ class BanConsole(Model):
             raise UserAndGroupIsNone()
 
         key = (user_id, group_id)
+        now = time.monotonic()
+        expire = cls._none_cache.get(key)
+        if expire and expire > now:
+            return None
+        cls._none_cache.pop(key, None)
+
         future = cls._inflight.get(key)
         if future:
             return await future
@@ -65,15 +69,19 @@ class BanConsole(Model):
         try:
             dao = DataAccess(cls)
             if user_id:
-                if group_id:
-                    q = Q(user_id=user_id) & Q(group_id=group_id)
-                else:
-                    q = Q(user_id=user_id) & Q(group_id__isnull=True)
+                result = (
+                    await dao.safe_get_or_none(user_id=user_id, group_id=group_id)
+                    if group_id
+                    else await dao.safe_get_or_none(
+                        user_id=user_id, group_id__isnull=True
+                    )
+                )
             else:
-                q = Q(user_id="") & Q(group_id=group_id)
+                result = await dao.safe_get_or_none(user_id="", group_id=group_id)
 
-            result = await dao.safe_get_or_none(True, q)
             future.set_result(result)
+            if result is None:
+                cls._none_cache[key] = time.monotonic() + cls._none_cache_ttl
             return result
         except Exception as e:
             future.set_exception(e)
@@ -130,87 +138,21 @@ class BanConsole(Model):
         return 0
 
     @classmethod
-    async def is_ban(
-        cls, user_id: str | None, group_id: str | None = None
-    ) -> list[Self]:
+    async def is_ban(cls, user_id: str | None, group_id: str | None = None) -> bool:
         """判断用户是否被ban
 
         参数:
             user_id: 用户id
-            group_id: 群组id
 
         返回:
-            bool: list[Self] | None
+            bool: 是否被ban
         """
         logger.debug("检测是否被ban", target=f"{group_id}:{user_id}")
-
-        q_conditions = []
-
-        if user_id and group_id:
-            q_conditions.append(Q(user_id=user_id, group_id=group_id))
-        if user_id:
-            q_conditions.append(Q(user_id=user_id, group_id__isnull=True))
-        if group_id:
-            q_conditions.append(Q(group_id=group_id, user_id=""))
-
-        if not q_conditions:
-            return []
-
-        q = q_conditions[0]
-        for condition in q_conditions[1:]:
-            q |= condition
-
-        users = await cls.filter(q).all()
-        if not users:
-            return []
-
-        results = []
-        for user in users:
-            # 永久封禁视为一直处于封禁中
-            if user.duration == -1:
-                results.append(user)
-                continue
-
-            _time = time.time() - (user.ban_time + user.duration)
-            # 还在封禁期内
-            if _time < 0:
-                results.append(user)
-                continue
-
-            # 已过期，删除记录并标记为不满足「全部仍在封禁」条件
-            await user.delete()
-
-        return results
-
-    @classmethod
-    async def is_ban_cached(
-        cls, user_id: str | None, group_id: str | None
-    ) -> list[Self]:
-        """带缓存的 ban 状态检查
-
-        参数:
-            user_id: 用户id
-            group_id: 群组id
-
-        返回:
-            list[Self]: ban记录列表，空列表表示未被ban
-        """
-        cache_key = f"{user_id}_{group_id}"
-
-        results = await CacheRoot.get(CacheType.BAN, cache_key)
-        if not results:
-            results = await cls.is_ban(user_id, group_id)
-            await CacheRoot.set(
-                CacheType.BAN,
-                cache_key,
-                results or DataAccess._NULL_RESULT,
-            )
-            return results
-
-        if results == DataAccess._NULL_RESULT:
-            return []
-
-        return [CacheRoot._deserialize_value(r, cls) for r in results]
+        if await cls.check_ban_time(user_id, group_id):
+            return True
+        else:
+            await cls.unban(user_id, group_id)
+        return False
 
     @classmethod
     async def ban(
