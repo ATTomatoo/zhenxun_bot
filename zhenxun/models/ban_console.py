@@ -30,8 +30,7 @@ class BanConsole(Model):
     operator = fields.CharField(255)
     """使用Ban命令的用户"""
     _inflight: ClassVar[dict[tuple[str | None, str | None], asyncio.Future]] = {}
-    _none_cache: ClassVar[dict[tuple[str | None, str | None], float]] = {}
-    _none_cache_ttl: ClassVar[float] = 10.0
+    # 仅缓存已ban记录，不存在的直接视为未ban
     _ban_mem: ClassVar[dict[tuple[str | None, str | None], "BanConsole | None"]] = {}
     _ban_loaded: ClassVar[bool] = False
     _ban_loaded_ts: ClassVar[float] = 0.0
@@ -63,14 +62,12 @@ class BanConsole(Model):
             try:
                 dao = DataAccess(cls)
                 all_bans = await dao.all()
-                cls._ban_mem = {
-                    (b.user_id, b.group_id): b
-                    for b in all_bans
-                }
-                cls._ban_loaded = True
-                cls._ban_loaded_ts = time.monotonic()
+                cls._ban_mem = {(b.user_id, b.group_id): b for b in all_bans}
             except Exception as e:
                 logger.error(f"预加载 ban 列表失败: {e}")
+            finally:
+                cls._ban_loaded = True  # 即使无数据也视为已预热，避免反复查库
+                cls._ban_loaded_ts = time.monotonic()
 
     @classmethod
     async def _get_data(cls, user_id: str | None, group_id: str | None) -> Self | None:
@@ -78,15 +75,16 @@ class BanConsole(Model):
             raise UserAndGroupIsNone()
 
         key = (user_id, group_id)
-        now = time.monotonic()
-        expire = cls._none_cache.get(key)
-        if expire and expire > now:
-            return None
-        cls._none_cache.pop(key, None)
-
         await cls._ensure_preload()
-        if cls._ban_mem:
-            return cls._ban_mem.get(key)
+        # 优先精确匹配，再尝试用户全局/群全局封禁；若已预热且未命中，直接视为未ban
+        if key in cls._ban_mem:
+            return cls._ban_mem[key]
+        if user_id and (user_id, None) in cls._ban_mem:
+            return cls._ban_mem[(user_id, None)]
+        if group_id and (None, group_id) in cls._ban_mem:
+            return cls._ban_mem[(None, group_id)]
+        if cls._ban_loaded:
+            return None
 
         future = cls._inflight.get(key)
         if future:
@@ -116,8 +114,8 @@ class BanConsole(Model):
                 result = None
 
             future.set_result(result)
-            if result is None:
-                cls._none_cache[key] = time.monotonic() + cls._none_cache_ttl
+            if result is not None:
+                cls._ban_mem[key] = result
             return result
         except Exception as e:
             future.set_exception(e)
@@ -205,7 +203,7 @@ class BanConsole(Model):
             target=f"{group_id}:{user_id}",
         )
 
-        await cls.update_or_create(
+        record, _ = await cls.update_or_create(
             user_id=user_id,
             group_id=group_id,
             defaults={
@@ -216,10 +214,7 @@ class BanConsole(Model):
                 "operator": operator or 0,
             },
         )
-        cls._ban_mem[(user_id, group_id)] = await cls.safe_get_or_none(
-            user_id=user_id, group_id=group_id
-        )
-        cls._none_cache.pop((user_id, group_id), None)
+        cls._ban_mem[(user_id, group_id)] = record
 
     @classmethod
     async def unban(cls, user_id: str | None, group_id: str | None = None) -> bool:
@@ -237,7 +232,6 @@ class BanConsole(Model):
             logger.debug("解除封禁", target=f"{group_id}:{user_id}")
             await user.delete()
             cls._ban_mem[(user_id, group_id)] = None
-            cls._none_cache[(user_id, group_id)] = time.monotonic() + cls._none_cache_ttl
             return True
         return False
 
