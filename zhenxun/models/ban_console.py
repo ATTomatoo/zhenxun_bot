@@ -31,7 +31,12 @@ class BanConsole(Model):
     """使用Ban命令的用户"""
     _inflight: ClassVar[dict[tuple[str | None, str | None], asyncio.Future]] = {}
     _none_cache: ClassVar[dict[tuple[str | None, str | None], float]] = {}
-    _none_cache_ttl: ClassVar[float] = 5.0
+    _none_cache_ttl: ClassVar[float] = 10.0
+    _ban_mem: ClassVar[dict[tuple[str | None, str | None], "BanConsole | None"]] = {}
+    _ban_loaded: ClassVar[bool] = False
+    _ban_loaded_ts: ClassVar[float] = 0.0
+    _ban_refresh_interval: ClassVar[float] = 300.0  # 5min
+    _ban_load_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
 
     class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "ban_console"
@@ -47,6 +52,27 @@ class BanConsole(Model):
     """开启锁"""
 
     @classmethod
+    async def _ensure_preload(cls) -> None:
+        now = time.monotonic()
+        if cls._ban_loaded and now - cls._ban_loaded_ts < cls._ban_refresh_interval:
+            return
+        async with cls._ban_load_lock:
+            if cls._ban_loaded and now - cls._ban_loaded_ts < cls._ban_refresh_interval:
+                return
+            logger.debug("预加载 ban 列表到内存缓存")
+            try:
+                dao = DataAccess(cls)
+                all_bans = await dao.all()
+                cls._ban_mem = {
+                    (b.user_id, b.group_id): b
+                    for b in all_bans
+                }
+                cls._ban_loaded = True
+                cls._ban_loaded_ts = time.monotonic()
+            except Exception as e:
+                logger.error(f"预加载 ban 列表失败: {e}")
+
+    @classmethod
     async def _get_data(cls, user_id: str | None, group_id: str | None) -> Self | None:
         if not user_id and not group_id:
             raise UserAndGroupIsNone()
@@ -58,6 +84,10 @@ class BanConsole(Model):
             return None
         cls._none_cache.pop(key, None)
 
+        await cls._ensure_preload()
+        if cls._ban_mem:
+            return cls._ban_mem.get(key)
+
         future = cls._inflight.get(key)
         if future:
             return await future
@@ -68,16 +98,22 @@ class BanConsole(Model):
 
         try:
             dao = DataAccess(cls)
-            if user_id:
-                result = (
-                    await dao.safe_get_or_none(user_id=user_id, group_id=group_id)
-                    if group_id
-                    else await dao.safe_get_or_none(
-                        user_id=user_id, group_id__isnull=True
+            try:
+                if user_id:
+                    result = (
+                        await dao.safe_get_or_none(user_id=user_id, group_id=group_id)
+                        if group_id
+                        else await dao.safe_get_or_none(
+                            user_id=user_id, group_id__isnull=True
+                        )
                     )
+                else:
+                    result = await dao.safe_get_or_none(user_id="", group_id=group_id)
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"BanConsole 查询超时: user_id={user_id}, group_id={group_id}"
                 )
-            else:
-                result = await dao.safe_get_or_none(user_id="", group_id=group_id)
+                result = None
 
             future.set_result(result)
             if result is None:
@@ -180,6 +216,10 @@ class BanConsole(Model):
                 "operator": operator or 0,
             },
         )
+        cls._ban_mem[(user_id, group_id)] = await cls.safe_get_or_none(
+            user_id=user_id, group_id=group_id
+        )
+        cls._none_cache.pop((user_id, group_id), None)
 
     @classmethod
     async def unban(cls, user_id: str | None, group_id: str | None = None) -> bool:
@@ -196,6 +236,8 @@ class BanConsole(Model):
         if user:
             logger.debug("解除封禁", target=f"{group_id}:{user_id}")
             await user.delete()
+            cls._ban_mem[(user_id, group_id)] = None
+            cls._none_cache[(user_id, group_id)] = time.monotonic() + cls._none_cache_ttl
             return True
         return False
 
