@@ -51,6 +51,7 @@ from .auth.exception import (
 # 超时设置（秒）—— DataAccess 内部已对单次 DB / 缓存访问做了自己的超时控制；
 # 这里主要用于控制单个权限检查步骤的上限时间。
 TIMEOUT_SECONDS = 5.0
+GROUP_BOOTSTRAP_TIMEOUT_SECONDS = 3.0
 
 AUTHCHECK_MAX_CONCURRENCY = 80
 _AUTH_SEM = asyncio.Semaphore(AUTHCHECK_MAX_CONCURRENCY)
@@ -80,7 +81,7 @@ _INFLIGHT_LOCK = asyncio.Lock()
 _DEDUP_CACHE: dict[tuple, tuple[float, bool]] = {}
 _DEDUP_CACHE_LOCK = asyncio.Lock()
 
-_BAN_LOCKS: dict[tuple[int, int | None], asyncio.Lock] = defaultdict(asyncio.Lock)
+_BAN_LOCKS: dict[tuple[str, str | None], asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 def _extract_event_token(event: Event) -> Any:
@@ -96,6 +97,12 @@ def _extract_event_token(event: Event) -> Any:
         return id(event)
 
 
+def _normalize_entity_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
 def _make_dedup_key(matcher: Matcher, bot: Bot, session: Uninfo, event: Event) -> tuple:
     entity = get_entity_ids(session)
     module = matcher.plugin_name or ""
@@ -106,9 +113,9 @@ def _make_dedup_key(matcher: Matcher, bot: Bot, session: Uninfo, event: Event) -
         str(bot.self_id),
         event_token,
         str(module),
-        int(entity.user_id),
-        int(entity.group_id) if entity.group_id is not None else None,
-        int(entity.channel_id) if entity.channel_id is not None else None,
+        _normalize_entity_id(entity.user_id),
+        _normalize_entity_id(entity.group_id),
+        _normalize_entity_id(entity.channel_id),
     )
 
 
@@ -195,7 +202,9 @@ class AuthChecker:
         except Exception:
             return 100
 
-    async def _build_default_base_ctx(self, bot: Bot, session: Uninfo) -> BaseContext:
+    async def _build_default_base_ctx(
+        self, bot: Bot, session: Uninfo, group: GroupConsole | None = None
+    ) -> BaseContext:
         entity = get_entity_ids(session)
         await UserConsole.ensure_user_async(
             entity.user_id, getattr(session, "platform", None)
@@ -208,11 +217,49 @@ class AuthChecker:
         )
         return BaseContext(
             user=user,
-            group=None,
+            group=group,
             bot_id=str(bot.self_id),
             session=session,
             entity=entity,
         )
+
+    async def _bootstrap_group(
+        self, bot: Bot, session: Uninfo, entity: Any
+    ) -> GroupConsole | None:
+        group_id = _normalize_entity_id(entity.group_id)
+        if not group_id:
+            return None
+        channel_id = _normalize_entity_id(entity.channel_id)
+        defaults = {"platform": PlatformUtils.get_platform(session)}
+        if hasattr(bot, "get_group_info"):
+            try:
+                group_id_param = int(group_id) if group_id.isdigit() else group_id
+                info = await bot.get_group_info(group_id=group_id_param)
+                if isinstance(info, dict):
+                    defaults.update(
+                        {
+                            "group_name": info.get("group_name", ""),
+                            "max_member_count": info.get("max_member_count", 0),
+                            "member_count": info.get("member_count", 0),
+                        }
+                    )
+            except Exception:
+                pass
+        try:
+            group, _ = await GroupConsole.update_or_create(
+                group_id=group_id,
+                channel_id=channel_id,
+                defaults=defaults,
+            )
+            return group
+        except Exception as e:
+            logger.debug(
+                f"bootstrap group failed: {group_id}",
+                LOGGER_COMMAND,
+                session=session,
+                e=e,
+            )
+            return None
 
     async def _execute_check(
         self,
@@ -293,7 +340,6 @@ class AuthChecker:
         entity = get_entity_ids(session)
 
         user_dao = DataAccess(UserConsole)
-        group_dao = DataAccess(GroupConsole) if entity.group_id else None
 
         # 避免新用户在权限热路径写库：先用只读查询，必要时异步批量创建
         task_items: list[tuple[str, asyncio.Task]] = [
@@ -309,13 +355,14 @@ class AuthChecker:
             )
         ]
 
-        if entity.group_id and group_dao:
+        if entity.group_id:
             task_items.append(
                 (
                     "group",
                     asyncio.create_task(
-                        group_dao.safe_get_or_none(
-                            group_id=entity.group_id, channel_id__isnull=True
+                        GroupConsole.get_group(
+                            group_id=str(entity.group_id),
+                            channel_id=_normalize_entity_id(entity.channel_id),
                         ),
                         name="authctx:group",
                     ),
@@ -361,9 +408,10 @@ class AuthChecker:
                         user_id=entity.user_id,
                         platform=getattr(session, "platform", None),
                     )
-                    if entity.group_id and group_dao:
-                        group = await group_dao.safe_get_or_none(
-                            group_id=entity.group_id, channel_id__isnull=True
+                    if entity.group_id:
+                        group = await GroupConsole.get_group(
+                            group_id=str(entity.group_id),
+                            channel_id=_normalize_entity_id(entity.channel_id),
                         )
                     break
                 except IntegrityError as e:
@@ -380,8 +428,22 @@ class AuthChecker:
             user = results[0]
             group = results[1] if len(results) > 1 else None
 
+        if entity.group_id and not group:
+            try:
+                group = await asyncio.wait_for(
+                    self._bootstrap_group(bot, session, entity),
+                    timeout=GROUP_BOOTSTRAP_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.debug(
+                    "bootstrap group timeout",
+                    LOGGER_COMMAND,
+                    session=session,
+                )
+
         if not user:
-            return await self._build_default_base_ctx(bot, session)
+            await user_dao.clear_cache(user_id=entity.user_id)
+            return await self._build_default_base_ctx(bot, session, group)
 
         return BaseContext(
             user=user,
@@ -400,9 +462,9 @@ class AuthChecker:
         base_key = (
             platform,
             str(bot.self_id),
-            int(entity.user_id),
-            int(entity.group_id) if entity.group_id is not None else None,
-            int(entity.channel_id) if entity.channel_id is not None else None,
+            _normalize_entity_id(entity.user_id),
+            _normalize_entity_id(entity.group_id),
+            _normalize_entity_id(entity.channel_id),
         )
 
         now = time.monotonic()
@@ -506,9 +568,9 @@ class AuthChecker:
             str(bot.self_id),
             _extract_event_token(event),
             str(module),
-            int(entity.user_id),
-            int(entity.group_id) if entity.group_id is not None else None,
-            int(entity.channel_id) if entity.channel_id is not None else None,
+            _normalize_entity_id(entity.user_id),
+            _normalize_entity_id(entity.group_id),
+            _normalize_entity_id(entity.channel_id),
         )
 
         async with _CTX_INFLIGHT_LOCK:

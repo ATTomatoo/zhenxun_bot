@@ -2,6 +2,7 @@ from typing import Any, ClassVar, cast, overload
 from typing_extensions import Self
 
 from tortoise import fields
+from tortoise.expressions import Q
 from tortoise.backends.base.client import BaseDBAsyncClient
 
 from zhenxun.models.plugin_info import PluginInfo
@@ -96,10 +97,8 @@ class GroupConsole(Model):
     """缓存类型"""
     cache_key_field = ("group_id", "channel_id")
     """缓存键字段"""
-    lock_fields: ClassVar[dict[DbLockType, tuple[str, str]]] = {
-        DbLockType.CREATE: ("group_id", "channel_id"),
-        DbLockType.UPSERT: ("group_id", "channel_id"),
-    }
+    enable_lock: ClassVar[list[DbLockType]] = [DbLockType.CREATE, DbLockType.UPSERT]
+    """开启锁"""
 
     @classmethod
     async def _get_task_modules(cls, *, default_status: bool) -> list[str]:
@@ -265,10 +264,14 @@ class GroupConsole(Model):
                 clean_duplicates=clean_duplicates,
             )
         return await dao.safe_get_or_none(
+            cls._null_channel_q(),
             group_id=group_id,
-            channel_id__isnull=True,
             clean_duplicates=clean_duplicates,
         )
+
+    @classmethod
+    def _null_channel_q(cls) -> Q:
+        return Q(channel_id__isnull=True) | Q(channel_id="")
 
     @classmethod
     async def is_super_group(cls, group_id: str) -> bool:
@@ -446,20 +449,21 @@ class GroupConsole(Model):
         """
         task = add_disable_marker(task)
         if not channel_id:
+            null_channel_q = cls._null_channel_q()
             return await cls.exists(
+                null_channel_q,
                 group_id=group_id,
-                channel_id__isnull=True,
                 block_task__contains=task,
             ) or await cls.exists(
+                null_channel_q,
                 group_id=group_id,
-                channel_id__isnull=True,
                 superuser_block_task__contains=task,
             )
         return await cls.exists(
             group_id=group_id, channel_id=channel_id, block_task__contains=task
         ) or await cls.exists(
+            cls._null_channel_q(),
             group_id=group_id,
-            channel_id__isnull=True,
             superuser_block_task__contains=task,
         )
 

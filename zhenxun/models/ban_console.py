@@ -106,7 +106,9 @@ class BanConsole(Model):
                         )
                     )
                 else:
-                    result = await dao.safe_get_or_none(user_id="", group_id=group_id)
+                    result = await dao.safe_get_or_none(
+                        user_id__isnull=True, group_id=group_id
+                    )
             except asyncio.TimeoutError:
                 logger.error(
                     f"BanConsole 查询超时: user_id={user_id}, group_id={group_id}"

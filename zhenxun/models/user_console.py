@@ -151,12 +151,22 @@ class UserConsole(UserOpsMixin, Model):
     @classmethod
     async def get_user(cls, user_id: str, platform: str | None = None) -> "UserConsole":
         """
-        读路径不再写库；调用层若需要创建用户，请使用 ensure_user_async/批量刷新。
+        优先读取；缺失时安全创建并处理并发冲突。
         """
         user = await cls.get_or_none(user_id=user_id)
         if user:
             return user
-        raise cls.DoesNotExist  # 显式抛出，便于调用层选择降级或异步创建
+        try:
+            user, _ = await cls.get_or_create(
+                user_id=user_id,
+                defaults={"platform": platform, "uid": await cls.get_new_uid()},
+            )
+            return user
+        except IntegrityError:
+            user = await cls.get_or_none(user_id=user_id)
+            if user:
+                return user
+            raise
 
     @classmethod
     async def get_new_uid(cls) -> int:
