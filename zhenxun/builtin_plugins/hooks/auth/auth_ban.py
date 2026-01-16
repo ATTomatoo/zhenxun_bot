@@ -9,6 +9,7 @@ from nonebot_plugin_uninfo import Uninfo
 from zhenxun.configs.config import Config
 from zhenxun.models.ban_console import BanConsole
 from zhenxun.models.plugin_info import PluginInfo
+from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
@@ -25,6 +26,37 @@ Config.add_plugin_config(
     "才不会给你发消息.",
     help="对被ban用户发送的消息",
 )
+Config.add_plugin_config(
+    "hook",
+    "BAN_CACHE_TTL",
+    2,
+    help="ban cache ttl seconds",
+)
+
+_ban_cache_ttl_value = Config.get_config("hook", "BAN_CACHE_TTL", 2)
+try:
+    _ban_cache_ttl_value = int(_ban_cache_ttl_value)
+except (TypeError, ValueError):
+    _ban_cache_ttl_value = 2
+
+BAN_CACHE = (
+    CacheDict("AUTH_BAN_CACHE", expire=_ban_cache_ttl_value)
+    if _ban_cache_ttl_value and _ban_cache_ttl_value > 0
+    else None
+)
+
+
+def _ban_cache_key(user_id: str | None, group_id: str | None) -> str:
+    return f"{user_id or ''}:{group_id or ''}"
+
+
+def _ban_cache_get(key: str) -> int | None:
+    if not BAN_CACHE:
+        return None
+    try:
+        return BAN_CACHE[key]
+    except KeyError:
+        return None
 
 
 async def calculate_ban_time(ban_record: BanConsole | None) -> int:
@@ -62,6 +94,11 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
     if not user_id and not group_id:
         return 0
 
+    cache_key = _ban_cache_key(user_id, group_id)
+    cached = _ban_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     start_time = time.time()
     ban_dao = DataAccess(BanConsole)
 
@@ -96,6 +133,8 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                     f"查询ban记录超时: user_id={user_id}, group_id={group_id}",
                     LOGGER_COMMAND,
                 )
+                if BAN_CACHE:
+                    BAN_CACHE[cache_key] = 0
                 return 0
 
         # 检查记录并计算ban时间
@@ -107,6 +146,8 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
 
         # 如果没有找到记录，返回0
         if not results:
+            if BAN_CACHE:
+                BAN_CACHE[cache_key] = 0
             return 0
 
         logger.debug(f"查询到的ban记录: {results}", LOGGER_COMMAND)
@@ -119,6 +160,8 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                 if ban_time == -1 or ban_time > max_ban_time:
                     max_ban_time = ban_time
 
+        if BAN_CACHE:
+            BAN_CACHE[cache_key] = max_ban_time
         return max_ban_time
     finally:
         # 记录执行时间

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import time
 
 from nonebot.adapters import Bot, Event
@@ -8,9 +9,11 @@ from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_uninfo import Uninfo
 from tortoise.exceptions import IntegrityError
 
+from zhenxun.configs.config import Config
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
+from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import GoldHandle, PluginType
@@ -34,6 +37,47 @@ from .auth.exception import (
 )
 from .auth.utils import base_config
 
+Config.add_plugin_config(
+    "hook",
+    "AUTH_HOOKS_CONCURRENCY_LIMIT",
+    6,
+    help="auth hooks concurrency limit",
+)
+Config.add_plugin_config(
+    "hook",
+    "AUTH_DB_CONCURRENCY_LIMIT",
+    6,
+    help="auth db concurrency limit",
+)
+Config.add_plugin_config(
+    "hook",
+    "AUTH_PLUGIN_CACHE_TTL",
+    30,
+    help="plugin info cache ttl seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "AUTH_USER_CACHE_TTL",
+    5,
+    help="user cache ttl seconds",
+)
+
+
+def _coerce_positive_int(value, default):
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return default
+    return value_int if value_int > 0 else default
+
+
+def _coerce_cache_ttl(value, default):
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return default
+    return value_int if value_int >= 0 else default
+
 # 超时设置（秒）
 TIMEOUT_SECONDS = 5.0
 # 熔断计数器
@@ -51,12 +95,71 @@ CIRCUIT_RESET_TIME = 300  # 5分钟
 # 并发控制：限制同时进入 hooks 并行检查的协程数
 
 # 默认为 6，可通过环境变量 AUTH_HOOKS_CONCURRENCY_LIMIT 调整
-HOOKS_CONCURRENCY_LIMIT = base_config.get("AUTH_HOOKS_CONCURRENCY_LIMIT")
+HOOKS_CONCURRENCY_LIMIT = _coerce_positive_int(
+    base_config.get("AUTH_HOOKS_CONCURRENCY_LIMIT", 6), 6
+)
+DB_CONCURRENCY_LIMIT = _coerce_positive_int(
+    base_config.get("AUTH_DB_CONCURRENCY_LIMIT", HOOKS_CONCURRENCY_LIMIT),
+    HOOKS_CONCURRENCY_LIMIT,
+)
+
+PLUGIN_CACHE_TTL = _coerce_cache_ttl(
+    base_config.get("AUTH_PLUGIN_CACHE_TTL", 30), 30
+)
+USER_CACHE_TTL = _coerce_cache_ttl(base_config.get("AUTH_USER_CACHE_TTL", 5), 5)
+
+PLUGIN_CACHE = (
+    CacheDict("AUTH_PLUGIN_CACHE", expire=PLUGIN_CACHE_TTL)
+    if PLUGIN_CACHE_TTL > 0
+    else None
+)
+USER_CACHE = (
+    CacheDict("AUTH_USER_CACHE", expire=USER_CACHE_TTL) if USER_CACHE_TTL > 0 else None
+)
 
 # 全局信号量与计数器
 HOOKS_SEMAPHORE = asyncio.Semaphore(HOOKS_CONCURRENCY_LIMIT)
 HOOKS_ACTIVE_COUNT = 0
 HOOKS_ACTIVE_LOCK = asyncio.Lock()
+
+DB_SEMAPHORE = asyncio.Semaphore(DB_CONCURRENCY_LIMIT)
+DB_ACTIVE_COUNT = 0
+DB_ACTIVE_LOCK = asyncio.Lock()
+
+
+def _cache_get(cache: CacheDict | None, key: str):
+    if not cache:
+        return None
+    try:
+        return cache[key]
+    except KeyError:
+        return None
+
+
+def _cache_set(cache: CacheDict | None, key: str, value):
+    if cache:
+        cache[key] = value
+
+
+@contextlib.asynccontextmanager
+async def _db_section():
+    global DB_ACTIVE_COUNT
+    await DB_SEMAPHORE.acquire()
+    async with DB_ACTIVE_LOCK:
+        DB_ACTIVE_COUNT += 1
+        logger.debug(
+            f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND
+        )
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            DB_SEMAPHORE.release()
+        async with DB_ACTIVE_LOCK:
+            DB_ACTIVE_COUNT = max(DB_ACTIVE_COUNT - 1, 0)
+            logger.debug(
+                f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND
+            )
 
 
 # 超时装饰器
@@ -120,6 +223,32 @@ def check_circuit_breaker(name):
     return CIRCUIT_BREAKERS[name]["active"]
 
 
+def _is_hidden_plugin(matcher: Matcher) -> bool:
+    plugin = matcher.plugin
+    if not plugin or not plugin.metadata:
+        return False
+    extra = plugin.metadata.extra or {}
+    return extra.get("plugin_type") == PluginType.HIDDEN
+
+
+async def _fetch_user(user_dao: DataAccess, user_id: str) -> UserConsole | None:
+    try:
+        return await with_timeout(
+            user_dao.get_by_func_or_none(UserConsole.get_user, False, user_id=user_id),
+            name="get_user",
+        )
+    except IntegrityError as e:
+        raise PermissionExemption("duplicate user create, skip permission check") from e
+
+
+async def _fetch_plugin(
+    plugin_dao: DataAccess, module: str
+) -> PluginInfo | None:
+    return await with_timeout(
+        plugin_dao.safe_get_or_none(module=module), name="get_plugin"
+    )
+
+
 async def get_plugin_and_user(
     module: str, user_id: str
 ) -> tuple[PluginInfo, UserConsole]:
@@ -141,34 +270,52 @@ async def get_plugin_and_user(
     user_dao = DataAccess(UserConsole)
     plugin_dao = DataAccess(PluginInfo)
 
-    # 并行查询插件和用户数据
-    plugin_task = plugin_dao.safe_get_or_none(module=module)
-    user_task = user_dao.get_by_func_or_none(
-        UserConsole.get_user, False, user_id=user_id
-    )
+    cached_plugin = _cache_get(PLUGIN_CACHE, module)
+    cached_user = _cache_get(USER_CACHE, user_id)
 
-    try:
-        plugin, user = await with_timeout(
-            asyncio.gather(plugin_task, user_task), name="get_plugin_and_user"
-        )
-    except asyncio.TimeoutError:
-        # 如果并行查询超时，尝试串行查询
-        logger.warning("并行查询超时，尝试串行查询", LOGGER_COMMAND)
-        plugin = await with_timeout(
-            plugin_dao.safe_get_or_none(module=module), name="get_plugin"
-        )
-        user = await with_timeout(
-            user_dao.safe_get_or_none(user_id=user_id), name="get_user"
-        )
-    except IntegrityError:
-        await asyncio.sleep(0.5)
-        plugin_task = plugin_dao.safe_get_or_none(module=module)
-        user_task = user_dao.get_by_func_or_none(
-            UserConsole.get_user, False, user_id=user_id
-        )
-        plugin, user = await with_timeout(
-            asyncio.gather(plugin_task, user_task), name="get_plugin_and_user"
-        )
+    if cached_plugin and cached_plugin.cost_gold > 0:
+        cached_user = None
+
+    if cached_plugin and cached_user:
+        if cached_plugin.plugin_type == PluginType.HIDDEN:
+            raise PermissionExemption(
+                f"plugin {cached_plugin.name}:{cached_plugin.module} hidden, skip"
+            )
+        return cached_plugin, cached_user
+
+    async with _db_section():
+        if cached_plugin and not cached_user:
+            plugin = cached_plugin
+            user = await _fetch_user(user_dao, user_id)
+        elif cached_user and not cached_plugin:
+            plugin = await _fetch_plugin(plugin_dao, module)
+            user = cached_user
+        else:
+            plugin_task = plugin_dao.safe_get_or_none(module=module)
+            user_task = user_dao.get_by_func_or_none(
+                UserConsole.get_user, False, user_id=user_id
+            )
+            try:
+                plugin, user = await with_timeout(
+                    asyncio.gather(plugin_task, user_task),
+                    name="get_plugin_and_user",
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "parallel query timeout, fallback to serial", LOGGER_COMMAND
+                )
+                plugin = await _fetch_plugin(plugin_dao, module)
+                user = await _fetch_user(user_dao, user_id)
+            except IntegrityError:
+                await asyncio.sleep(0.5)
+                plugin_task = plugin_dao.safe_get_or_none(module=module)
+                user_task = user_dao.get_by_func_or_none(
+                    UserConsole.get_user, False, user_id=user_id
+                )
+                plugin, user = await with_timeout(
+                    asyncio.gather(plugin_task, user_task),
+                    name="get_plugin_and_user",
+                )
 
     if not plugin:
         raise PermissionExemption(f"插件:{module} 数据不存在，已跳过权限检查...")
@@ -176,15 +323,11 @@ async def get_plugin_and_user(
         raise PermissionExemption(
             f"插件: {plugin.name}:{plugin.module} 为HIDDEN，已跳过权限检查..."
         )
-    user = None
-    try:
-        user = await user_dao.get_by_func_or_none(
-            UserConsole.get_user, False, user_id=user_id
-        )
-    except IntegrityError as e:
-        raise PermissionExemption("重复创建用户，已跳过该次权限检查...") from e
     if not user:
         raise PermissionExemption("用户数据不存在，已跳过权限检查...")
+    _cache_set(PLUGIN_CACHE, module, plugin)
+    if plugin.cost_gold <= 0:
+        _cache_set(USER_CACHE, user_id, user)
     return plugin, user
 
 
@@ -327,6 +470,9 @@ async def auth(
     try:
         if not module:
             raise PermissionExemption("Matcher插件名称不存在...")
+
+        if _is_hidden_plugin(matcher):
+            raise PermissionExemption(f"plugin {module} hidden, skip")
 
         # 获取插件和用户数据
         plugin_user_start = time.time()

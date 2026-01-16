@@ -48,8 +48,11 @@ class LimitManager:
     count_limit: ClassVar[dict[str, Limit]] = {}
 
     # 模块限制缓存，避免频繁查询数据库
-    module_limit_cache: ClassVar[dict[str, tuple[float, list[PluginLimit]]]] = {}
+    module_limit_cache: ClassVar[
+        dict[str, tuple[float, list[PluginLimit], bool]]
+    ] = {}
     module_cache_ttl: ClassVar[float] = 60  # 模块缓存有效期（秒）
+    module_cache_error_ttl: ClassVar[float] = 5  # 超时缓存有效期（秒）
 
     @classmethod
     async def init_limit(cls):
@@ -157,8 +160,9 @@ class LimitManager:
 
         # 检查缓存
         if module in cls.module_limit_cache:
-            cache_time, limits = cls.module_limit_cache[module]
-            if current_time - cache_time < cls.module_cache_ttl:
+            cache_time, limits, is_error = cls.module_limit_cache[module]
+            ttl = cls.module_cache_error_ttl if is_error else cls.module_cache_ttl
+            if current_time - cache_time < ttl:
                 return limits
 
         # 缓存不存在或已过期，从数据库查询
@@ -176,11 +180,12 @@ class LimitManager:
                 )
 
             # 更新缓存
-            cls.module_limit_cache[module] = (current_time, limits)
+            cls.module_limit_cache[module] = (current_time, limits, False)
             return limits
         except asyncio.TimeoutError:
             logger.error(f"查询模块限制信息超时: {module}", LOGGER_COMMAND)
             # 超时时返回空列表，避免阻塞
+            cls.module_limit_cache[module] = (current_time, [], True)
             return []
 
     @classmethod
