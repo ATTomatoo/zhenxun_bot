@@ -22,6 +22,7 @@ driver.on_shutdown(disconnect)
 # nonebot.load_builtin_plugins("echo")
 nonebot.load_plugins("zhenxun/builtin_plugins")
 nonebot.load_plugins("zhenxun/plugins")
+nonebot.load_plugins("zhenxun/extensive_plugins")
 
 
 if __name__ == "__main__":
