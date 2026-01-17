@@ -1,4 +1,3 @@
-import asyncio
 import time
 
 from nonebot.adapters import Event
@@ -6,14 +5,33 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
-from zhenxun.utils.common_utils import CommonUtils
 from zhenxun.utils.enum import BlockType
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD
 from .exception import IsSuperuserException, SkipPluginException
 from .utils import freq, is_poke, send_message
+
+
+def _parse_block_set(value: str | None) -> frozenset[str]:
+    if not value:
+        return frozenset()
+    items = []
+    for part in value.split("<"):
+        part = part.strip()
+        if not part:
+            continue
+        part = part.strip(",").strip()
+        if part:
+            items.append(part)
+    return frozenset(items)
+
+
+def _get_group_block_set(group, value_attr: str, set_attr: str) -> frozenset[str]:
+    cached = getattr(group, set_attr, None)
+    if cached is not None:
+        return cached
+    return _parse_block_set(getattr(group, value_attr, "") or "")
 
 
 class GroupCheck:
@@ -25,6 +43,12 @@ class GroupCheck:
         self.plugin = plugin
         self.group_data = group
         self.group_id = group.group_id
+        self.block_plugin_set = _get_group_block_set(
+            group, "block_plugin", "block_plugin_set"
+        )
+        self.superuser_block_plugin_set = _get_group_block_set(
+            group, "superuser_block_plugin", "superuser_block_plugin_set"
+        )
 
     async def check(self):
         start_time = time.time()
@@ -32,8 +56,7 @@ class GroupCheck:
             # 检查超级用户禁用
             if (
                 self.group_data
-                and CommonUtils.format(self.plugin.module)
-                in self.group_data.superuser_block_plugin
+                and self.plugin.module in self.superuser_block_plugin_set
             ):
                 if freq.is_send_limit_message(self.plugin, self.group_id, self.is_poke):
                     await send_message(
@@ -50,8 +73,7 @@ class GroupCheck:
             # 检查普通禁用
             if (
                 self.group_data
-                and CommonUtils.format(self.plugin.module)
-                in self.group_data.block_plugin
+                and self.plugin.module in self.block_plugin_set
             ):
                 if freq.is_send_limit_message(self.plugin, self.group_id, self.is_poke):
                     await send_message(
@@ -167,19 +189,11 @@ async def auth_plugin(
         is_poke_event = is_poke(event)
         user_check = PluginCheck(group, session, is_poke_event)
 
-        tasks = []
         if group:
-            tasks.append(GroupCheck(plugin, group, session, is_poke_event).check())
+            await GroupCheck(plugin, group, session, is_poke_event).check()
         else:
-            tasks.append(user_check.check_user(plugin))
-        tasks.append(user_check.check_global(plugin))
-
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*tasks), timeout=DB_TIMEOUT_SECONDS * 2
-            )
-        except asyncio.TimeoutError:
-            logger.error("插件用户/群组/全局检查超时...", LOGGER_COMMAND)
+            await user_check.check_user(plugin)
+        await user_check.check_global(plugin)
 
     finally:
         # 记录总执行时间

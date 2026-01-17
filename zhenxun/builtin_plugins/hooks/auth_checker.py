@@ -23,7 +23,7 @@ from zhenxun.services.cache.runtime_cache import (
 from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
-from zhenxun.utils.enum import GoldHandle, PluginType
+from zhenxun.utils.enum import BlockType, GoldHandle, PluginType
 from zhenxun.utils.exception import InsufficientGold
 from zhenxun.utils.platform import PlatformUtils
 from zhenxun.utils.utils import get_entity_ids
@@ -216,6 +216,42 @@ async def _get_group_cached(entity, event_cache):
     if event_cache is not None:
         event_cache["group"] = group
     return group
+
+
+def _module_in_block_string(module: str, value: str | None) -> bool:
+    if not value:
+        return False
+    return f"<{module}," in value
+
+
+def _group_has_plugin_block(group, module: str) -> bool:
+    if not group:
+        return False
+    block_set = getattr(group, "block_plugin_set", None)
+    super_block_set = getattr(group, "superuser_block_plugin_set", None)
+    if block_set is not None or super_block_set is not None:
+        if block_set and module in block_set:
+            return True
+        if super_block_set and module in super_block_set:
+            return True
+        return False
+    block_plugin = getattr(group, "block_plugin", "") or ""
+    super_block_plugin = getattr(group, "superuser_block_plugin", "") or ""
+    return _module_in_block_string(module, block_plugin) or _module_in_block_string(
+        module, super_block_plugin
+    )
+
+
+def _needs_auth_plugin(plugin: PluginInfo, group, entity) -> bool:
+    if plugin.block_type == BlockType.ALL and not plugin.status:
+        if group and getattr(group, "is_super", False):
+            return False
+        return True
+    if entity.group_id:
+        if plugin.block_type == BlockType.GROUP:
+            return True
+        return _group_has_plugin_block(group, plugin.module)
+    return plugin.block_type == BlockType.PRIVATE
 
 
 async def _get_bot_data_cached(bot_id: str, event_cache):
@@ -618,13 +654,16 @@ async def auth(
                     )
                 )
 
-        hook_tasks.append(
-            time_hook(
-                auth_plugin(plugin, group, session, event),
-                "auth_plugin",
-                hook_times,
+        if _needs_auth_plugin(plugin, group, entity):
+            hook_tasks.append(
+                time_hook(
+                    auth_plugin(plugin, group, session, event),
+                    "auth_plugin",
+                    hook_times,
+                )
             )
-        )
+        else:
+            hook_times["auth_plugin"] = "skipped"
         hook_tasks.append(
             time_hook(auth_limit(plugin, session), "auth_limit", hook_times)
         )

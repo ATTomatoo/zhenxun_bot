@@ -5,7 +5,7 @@ import json
 import os
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from zhenxun.configs.config import Config
@@ -127,6 +127,20 @@ def _redis_enabled() -> bool:
     return bool(_env_get("REDIS_HOST"))
 
 
+def _parse_block_modules(value: str) -> frozenset[str]:
+    if not value:
+        return frozenset()
+    items = []
+    for part in value.split("<"):
+        part = part.strip()
+        if not part:
+            continue
+        part = part.strip(",").strip()
+        if part:
+            items.append(part)
+    return frozenset(items)
+
+
 @dataclass(frozen=True)
 class BanEntry:
     user_id: str | None
@@ -206,9 +220,13 @@ class GroupSnapshot:
     block_task: str
     superuser_block_task: str
     platform: str | None
+    block_plugin_set: frozenset[str] = field(default_factory=frozenset)
+    superuser_block_plugin_set: frozenset[str] = field(default_factory=frozenset)
 
     @classmethod
     def from_model(cls, model) -> "GroupSnapshot":
+        block_plugin = getattr(model, "block_plugin", "") or ""
+        superuser_block_plugin = getattr(model, "superuser_block_plugin", "") or ""
         return cls(
             group_id=str(model.group_id),
             channel_id=getattr(model, "channel_id", None),
@@ -219,11 +237,13 @@ class GroupSnapshot:
             level=int(getattr(model, "level", 0) or 0),
             is_super=bool(getattr(model, "is_super", False)),
             group_flag=int(getattr(model, "group_flag", 0) or 0),
-            block_plugin=getattr(model, "block_plugin", "") or "",
-            superuser_block_plugin=getattr(model, "superuser_block_plugin", "") or "",
+            block_plugin=block_plugin,
+            superuser_block_plugin=superuser_block_plugin,
             block_task=getattr(model, "block_task", "") or "",
             superuser_block_task=getattr(model, "superuser_block_task", "") or "",
             platform=getattr(model, "platform", None),
+            block_plugin_set=_parse_block_modules(block_plugin),
+            superuser_block_plugin_set=_parse_block_modules(superuser_block_plugin),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -246,6 +266,8 @@ class GroupSnapshot:
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "GroupSnapshot":
+        block_plugin = payload.get("block_plugin", "") or ""
+        superuser_block_plugin = payload.get("superuser_block_plugin", "") or ""
         return cls(
             group_id=str(payload.get("group_id", "")),
             channel_id=payload.get("channel_id"),
@@ -256,11 +278,13 @@ class GroupSnapshot:
             level=int(payload.get("level", 0) or 0),
             is_super=bool(payload.get("is_super", False)),
             group_flag=int(payload.get("group_flag", 0) or 0),
-            block_plugin=payload.get("block_plugin", "") or "",
-            superuser_block_plugin=payload.get("superuser_block_plugin", "") or "",
+            block_plugin=block_plugin,
+            superuser_block_plugin=superuser_block_plugin,
             block_task=payload.get("block_task", "") or "",
             superuser_block_task=payload.get("superuser_block_task", "") or "",
             platform=payload.get("platform"),
+            block_plugin_set=_parse_block_modules(block_plugin),
+            superuser_block_plugin_set=_parse_block_modules(superuser_block_plugin),
         )
 
 
