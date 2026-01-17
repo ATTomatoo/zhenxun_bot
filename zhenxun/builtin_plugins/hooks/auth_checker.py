@@ -7,10 +7,11 @@ from nonebot.exception import IgnoredException
 from nonebot.matcher import Matcher
 from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_uninfo import Uninfo
-from tortoise.exceptions import IntegrityError
 
 from zhenxun.configs.config import Config
+from zhenxun.models.bot_console import BotConsole
 from zhenxun.models.group_console import GroupConsole
+from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
 from zhenxun.services.cache.cache_containers import CacheDict
@@ -60,6 +61,12 @@ Config.add_plugin_config(
     "AUTH_USER_CACHE_TTL",
     5,
     help="user cache ttl seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "AUTH_EVENT_CACHE_TTL",
+    2,
+    help="event auth cache ttl seconds",
 )
 
 
@@ -116,6 +123,14 @@ PLUGIN_CACHE = (
 USER_CACHE = (
     CacheDict("AUTH_USER_CACHE", expire=USER_CACHE_TTL) if USER_CACHE_TTL > 0 else None
 )
+EVENT_CACHE_TTL = _coerce_cache_ttl(
+    base_config.get("AUTH_EVENT_CACHE_TTL", 2), 2
+)
+EVENT_CACHE = (
+    CacheDict("AUTH_EVENT_CACHE", expire=EVENT_CACHE_TTL)
+    if EVENT_CACHE_TTL > 0
+    else None
+)
 
 # 全局信号量与计数器
 HOOKS_SEMAPHORE = asyncio.Semaphore(HOOKS_CONCURRENCY_LIMIT)
@@ -141,6 +156,30 @@ def _cache_set(cache: CacheDict | None, key: str, value):
         cache[key] = value
 
 
+def _event_cache_key(event: Event, session: Uninfo, entity) -> str:
+    msg_id = getattr(event, "message_id", None)
+    if msg_id is None:
+        msg_id = getattr(event, "id", None)
+    if msg_id is None:
+        msg_id = id(event)
+    platform = PlatformUtils.get_platform(session)
+    group_id = entity.group_id or ""
+    channel_id = entity.channel_id or ""
+    return f"{platform}:{session.self_id}:{entity.user_id}:{group_id}:{channel_id}:{msg_id}"
+
+
+def _get_event_cache(event: Event, session: Uninfo, entity):
+    if not EVENT_CACHE:
+        return None
+    key = _event_cache_key(event, session, entity)
+    try:
+        return EVENT_CACHE[key]
+    except KeyError:
+        cache = {}
+        EVENT_CACHE[key] = cache
+        return cache
+
+
 @contextlib.asynccontextmanager
 async def _db_section():
     global DB_ACTIVE_COUNT
@@ -160,6 +199,76 @@ async def _db_section():
             logger.debug(
                 f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND
             )
+
+
+async def _get_group_cached(entity, event_cache):
+    if not entity.group_id:
+        return None
+    if event_cache is not None and "group" in event_cache:
+        return event_cache["group"]
+    group_dao = DataAccess(GroupConsole)
+    async with _db_section():
+        group = await with_timeout(
+            group_dao.safe_get_or_none(
+                group_id=entity.group_id, channel_id__isnull=True
+            ),
+            name="get_group",
+        )
+    if event_cache is not None:
+        event_cache["group"] = group
+    return group
+
+
+async def _get_bot_data_cached(bot_id: str, event_cache):
+    if event_cache is not None and "bot_data" in event_cache:
+        return event_cache.get("bot_data"), event_cache.get("bot_timeout", False)
+    bot_dao = DataAccess(BotConsole)
+    try:
+        async with _db_section():
+            bot = await with_timeout(
+                bot_dao.safe_get_or_none(bot_id=bot_id), name="get_bot"
+            )
+    except asyncio.TimeoutError:
+        if event_cache is not None:
+            event_cache["bot_data"] = None
+            event_cache["bot_timeout"] = True
+        return None, True
+    if event_cache is not None:
+        event_cache["bot_data"] = bot
+        event_cache["bot_timeout"] = False
+    return bot, False
+
+
+async def _get_admin_levels_cached(session: Uninfo, entity, event_cache):
+    if event_cache is not None and "admin_levels" in event_cache:
+        return event_cache.get("admin_levels"), event_cache.get("admin_timeout", False)
+    level_dao = DataAccess(LevelUser)
+    global_user_task = level_dao.safe_get_or_none(
+        user_id=session.user.id, group_id__isnull=True
+    )
+    group_users_task = None
+    if entity.group_id:
+        group_users_task = level_dao.safe_get_or_none(
+            user_id=session.user.id, group_id=entity.group_id
+        )
+    try:
+        async with _db_section():
+            results = await with_timeout(
+                asyncio.gather(global_user_task, group_users_task or asyncio.sleep(0)),
+                name="get_admin_levels",
+            )
+    except asyncio.TimeoutError:
+        if event_cache is not None:
+            event_cache["admin_levels"] = (None, None)
+            event_cache["admin_timeout"] = True
+        return (None, None), True
+    global_user = results[0]
+    group_users = results[1] if group_users_task else None
+    levels = (global_user, group_users)
+    if event_cache is not None:
+        event_cache["admin_levels"] = levels
+        event_cache["admin_timeout"] = False
+    return levels, False
 
 
 # 超时装饰器
@@ -231,14 +340,12 @@ def _is_hidden_plugin(matcher: Matcher) -> bool:
     return extra.get("plugin_type") == PluginType.HIDDEN
 
 
-async def _fetch_user(user_dao: DataAccess, user_id: str) -> UserConsole | None:
-    try:
-        return await with_timeout(
-            user_dao.get_by_func_or_none(UserConsole.get_user, False, user_id=user_id),
-            name="get_user",
-        )
-    except IntegrityError as e:
-        raise PermissionExemption("duplicate user create, skip permission check") from e
+async def _fetch_user_readonly(
+    user_dao: DataAccess, user_id: str
+) -> UserConsole | None:
+    return await with_timeout(
+        user_dao.safe_get_or_none(user_id=user_id), name="get_user"
+    )
 
 
 async def _fetch_plugin(
@@ -250,89 +357,37 @@ async def _fetch_plugin(
 
 
 async def get_plugin_and_user(
-    module: str, user_id: str
-) -> tuple[PluginInfo, UserConsole]:
-    """获取用户数据和插件信息
-
-    参数:
-        module: 模块名
-        user_id: 用户id
-
-    异常:
-        PermissionExemption: 插件数据不存在
-        PermissionExemption: 插件类型为HIDDEN
-        PermissionExemption: 重复创建用户
-        PermissionExemption: 用户数据不存在
-
-    返回:
-        tuple[PluginInfo, UserConsole]: 插件信息，用户信息
-    """
+    module: str, user_id: str, platform: str | None = None
+) -> tuple[PluginInfo, UserConsole | None]:
+    """Fetch plugin info and read user only when cost is required."""
     user_dao = DataAccess(UserConsole)
     plugin_dao = DataAccess(PluginInfo)
 
-    cached_plugin = _cache_get(PLUGIN_CACHE, module)
-    cached_user = _cache_get(USER_CACHE, user_id)
-
-    if cached_plugin and cached_plugin.cost_gold > 0:
-        cached_user = None
-
-    if cached_plugin and cached_user:
-        if cached_plugin.plugin_type == PluginType.HIDDEN:
-            raise PermissionExemption(
-                f"plugin {cached_plugin.name}:{cached_plugin.module} hidden, skip"
-            )
-        return cached_plugin, cached_user
-
-    async with _db_section():
-        if cached_plugin and not cached_user:
-            plugin = cached_plugin
-            user = await _fetch_user(user_dao, user_id)
-        elif cached_user and not cached_plugin:
+    plugin = _cache_get(PLUGIN_CACHE, module)
+    if not plugin:
+        async with _db_section():
             plugin = await _fetch_plugin(plugin_dao, module)
-            user = cached_user
-        else:
-            plugin_task = plugin_dao.safe_get_or_none(module=module)
-            user_task = user_dao.get_by_func_or_none(
-                UserConsole.get_user, False, user_id=user_id
-            )
-            try:
-                plugin, user = await with_timeout(
-                    asyncio.gather(plugin_task, user_task),
-                    name="get_plugin_and_user",
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "parallel query timeout, fallback to serial", LOGGER_COMMAND
-                )
-                plugin = await _fetch_plugin(plugin_dao, module)
-                user = await _fetch_user(user_dao, user_id)
-            except IntegrityError:
-                await asyncio.sleep(0.5)
-                plugin_task = plugin_dao.safe_get_or_none(module=module)
-                user_task = user_dao.get_by_func_or_none(
-                    UserConsole.get_user, False, user_id=user_id
-                )
-                plugin, user = await with_timeout(
-                    asyncio.gather(plugin_task, user_task),
-                    name="get_plugin_and_user",
-                )
 
     if not plugin:
-        raise PermissionExemption(f"插件:{module} 数据不存在，已跳过权限检查...")
+        raise PermissionExemption(
+            f"plugin:{module} not found, skip permission check"
+        )
     if plugin.plugin_type == PluginType.HIDDEN:
         raise PermissionExemption(
-            f"插件: {plugin.name}:{plugin.module} 为HIDDEN，已跳过权限检查..."
+            f"plugin {plugin.name}:{plugin.module} hidden, skip"
         )
-    if not user:
-        raise PermissionExemption("用户数据不存在，已跳过权限检查...")
+
+    user = None
+    if plugin.cost_gold > 0:
+        async with _db_section():
+            user = await _fetch_user_readonly(user_dao, user_id)
+
     _cache_set(PLUGIN_CACHE, module, plugin)
-    if plugin.cost_gold <= 0:
-        _cache_set(USER_CACHE, user_id, user)
     return plugin, user
 
 
 async def get_plugin_cost(
-    bot: Bot, user: UserConsole, plugin: PluginInfo, session: Uninfo
+    bot: Bot, user: UserConsole | None, plugin: PluginInfo, session: Uninfo
 ) -> int:
     """获取插件费用
 
@@ -459,6 +514,7 @@ async def auth(
     ignore_flag = False
     entity = get_entity_ids(session)
     module = matcher.plugin_name or ""
+    event_cache = _get_event_cache(event, session, entity)
 
     # 用于记录各个 hook 的执行时间
     hook_times = {}
@@ -473,12 +529,16 @@ async def auth(
 
         if _is_hidden_plugin(matcher):
             raise PermissionExemption(f"plugin {module} hidden, skip")
+        if event_cache is not None and event_cache.get("ban_state") is True:
+            raise SkipPluginException("user or group banned (cached)")
 
+        platform = PlatformUtils.get_platform(session)
         # 获取插件和用户数据
         plugin_user_start = time.time()
         try:
             plugin, user = await with_timeout(
-                get_plugin_and_user(module, entity.user_id), name="get_plugin_and_user"
+                get_plugin_and_user(module, entity.user_id, platform),
+                name="get_plugin_and_user",
             )
             hook_times["get_plugin_user"] = f"{time.time() - plugin_user_start:.3f}s"
         except asyncio.TimeoutError:
@@ -492,6 +552,27 @@ async def auth(
         # 进入 hooks 并行检查区域（会在高并发时排队）
         await _enter_hooks_section()
         entered_hooks = True
+
+        ban_cache_state = None
+        if event_cache is not None:
+            ban_cache_state = event_cache.get("ban_state")
+        if ban_cache_state is True:
+            hook_times["auth_ban"] = "cached"
+            raise SkipPluginException("user or group banned (cached)")
+        if ban_cache_state is None:
+            ban_start = time.time()
+            try:
+                await auth_ban(matcher, bot, session, plugin)
+                hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
+                if event_cache is not None:
+                    event_cache["ban_state"] = False
+            except SkipPluginException:
+                hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
+                if event_cache is not None:
+                    event_cache["ban_state"] = True
+                raise
+        else:
+            hook_times["auth_ban"] = "cached"
 
         # 获取插件费用
         cost_start = time.time()
@@ -509,34 +590,82 @@ async def auth(
         # 执行 bot_filter
         bot_filter(session)
 
-        group = None
-        if entity.group_id:
-            group_dao = DataAccess(GroupConsole)
-            group = await with_timeout(
-                group_dao.safe_get_or_none(
-                    group_id=entity.group_id, channel_id__isnull=True
-                ),
-                name="get_group",
+        group = await _get_group_cached(entity, event_cache)
+
+        bot_data = None
+        bot_timeout = False
+        if event_cache is not None:
+            bot_data, bot_timeout = await _get_bot_data_cached(
+                bot.self_id, event_cache
+            )
+
+        admin_levels = None
+        admin_timeout = False
+        if plugin.admin_level and event_cache is not None:
+            admin_levels, admin_timeout = await _get_admin_levels_cached(
+                session, entity, event_cache
             )
 
         # 并行执行所有 hook 检查，并记录执行时间
         hooks_start = time.time()
 
         # 创建所有 hook 任务
-        hook_tasks = [
-            time_hook(auth_ban(matcher, bot, session, plugin), "auth_ban", hook_times),
-            time_hook(auth_bot(plugin, bot.self_id), "auth_bot", hook_times),
+        hook_tasks = []
+        if event_cache is None:
+            hook_tasks.append(
+                time_hook(auth_bot(plugin, bot.self_id), "auth_bot", hook_times)
+            )
+        else:
+            if bot_timeout:
+                hook_times["auth_bot"] = "timeout"
+            else:
+                hook_tasks.append(
+                    time_hook(
+                        auth_bot(
+                            plugin,
+                            bot.self_id,
+                            bot_data=bot_data,
+                            skip_fetch=True,
+                        ),
+                        "auth_bot",
+                        hook_times,
+                    )
+                )
+
+        hook_tasks.append(
             time_hook(
                 auth_group(plugin, group, message, entity.group_id),
                 "auth_group",
                 hook_times,
-            ),
-            time_hook(auth_admin(plugin, session), "auth_admin", hook_times),
+            )
+        )
+
+        if event_cache is None:
+            hook_tasks.append(
+                time_hook(auth_admin(plugin, session), "auth_admin", hook_times)
+            )
+        else:
+            if admin_timeout:
+                hook_times["auth_admin"] = "timeout"
+            else:
+                hook_tasks.append(
+                    time_hook(
+                        auth_admin(plugin, session, cached_levels=admin_levels),
+                        "auth_admin",
+                        hook_times,
+                    )
+                )
+
+        hook_tasks.append(
             time_hook(
-                auth_plugin(plugin, group, session, event), "auth_plugin", hook_times
-            ),
-            time_hook(auth_limit(plugin, session), "auth_limit", hook_times),
-        ]
+                auth_plugin(plugin, group, session, event),
+                "auth_plugin",
+                hook_times,
+            )
+        )
+        hook_tasks.append(
+            time_hook(auth_limit(plugin, session), "auth_limit", hook_times)
+        )
 
         # 使用 gather 并行执行所有 hook，但添加总体超时控制
         try:

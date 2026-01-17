@@ -47,7 +47,8 @@ class CacheDict(Generic[T]):
             T: 字典值
         """
         if value := self._data.get(key):
-            if self.expire_time(key):
+            if value.expire_time > 0 and value.expire_time < time.time():
+                del self._data[key]
                 raise KeyError(f"键 {key} 已过期")
             return value.value
         raise KeyError(f"键 {key} 不存在")
@@ -80,7 +81,13 @@ class CacheDict(Generic[T]):
         返回:
             bool: 是否存在
         """
-        return False if key not in self._data else bool(self.expire_time(key))
+        data = self._data.get(key)
+        if data is None:
+            return False
+        if data.expire_time > 0 and data.expire_time < time.time():
+            del self._data[key]
+            return False
+        return True
 
     def get(self, key: str, default: Any = None) -> T | None:
         """获取字典项，如果不存在返回默认值
@@ -93,11 +100,11 @@ class CacheDict(Generic[T]):
             Any: 字典值或默认值
         """
         if value := self._data.get(key):
-            if self.expire_time(key):
+            if value.expire_time > 0 and value.expire_time < time.time():
+                del self._data[key]
                 return default
-        if not value:
-            return default
-        return default if value.value is None else value.value
+            return default if value.value is None else value.value
+        return default
 
     def set(self, key: str, value: Any, expire: int | None = None):
         """设置字典项
@@ -126,16 +133,13 @@ class CacheDict(Generic[T]):
         返回:
             Any: 字典值或默认值
         """
-        if key not in self._data:
+        data = self._data.get(key)
+        if data is None:
             return default
-
-        data = self._data.pop(key)
-
-        # 检查是否过期
         if data.expire_time > 0 and data.expire_time < time.time():
             del self._data[key]
             return default
-
+        del self._data[key]
         return data.value
 
     def clear(self) -> None:

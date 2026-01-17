@@ -11,11 +11,16 @@ from .exception import SkipPluginException
 from .utils import send_message
 
 
-async def auth_cost(user: UserConsole, plugin: PluginInfo, session: Uninfo) -> int:
+DEFAULT_GOLD = 100
+
+
+async def auth_cost(
+    user: UserConsole | None, plugin: PluginInfo, session: Uninfo
+) -> int:
     """检测是否满足金币条件
 
     参数:
-        user: UserConsole
+        user: UserConsole | None
         plugin: PluginInfo
         session: Uninfo
 
@@ -25,7 +30,8 @@ async def auth_cost(user: UserConsole, plugin: PluginInfo, session: Uninfo) -> i
     start_time = time.time()
 
     try:
-        if user.gold < plugin.cost_gold:
+        user_gold = user.gold if user else DEFAULT_GOLD
+        if user_gold < plugin.cost_gold:
             """插件消耗金币不足"""
             await send_message(session, f"金币不足..该功能需要{plugin.cost_gold}金币..")
             raise SkipPluginException(f"{plugin.name}({plugin.module}) 金币限制...")

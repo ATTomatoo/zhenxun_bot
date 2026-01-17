@@ -12,7 +12,12 @@ from .config import LOGGER_COMMAND, WARNING_THRESHOLD
 from .exception import SkipPluginException
 
 
-async def auth_bot(plugin: PluginInfo, bot_id: str):
+async def auth_bot(
+    plugin: PluginInfo,
+    bot_id: str,
+    bot_data: BotConsole | None = None,
+    skip_fetch: bool = False,
+):
     """bot层面的权限检查
 
     参数:
@@ -26,17 +31,19 @@ async def auth_bot(plugin: PluginInfo, bot_id: str):
     start_time = time.time()
 
     try:
-        # 从数据库或缓存中获取 bot 信息
-        bot_dao = DataAccess(BotConsole)
+        bot: BotConsole | None = bot_data
+        if bot is None and not skip_fetch:
+            # 从数据库或缓存中获取 bot 信息
+            bot_dao = DataAccess(BotConsole)
 
-        try:
-            bot: BotConsole | None = await asyncio.wait_for(
-                bot_dao.safe_get_or_none(bot_id=bot_id), timeout=DB_TIMEOUT_SECONDS
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"查询Bot信息超时: bot_id={bot_id}", LOGGER_COMMAND)
-            # 超时时不阻塞，继续执行
-            return
+            try:
+                bot = await asyncio.wait_for(
+                    bot_dao.safe_get_or_none(bot_id=bot_id), timeout=DB_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"查询Bot信息超时: bot_id={bot_id}", LOGGER_COMMAND)
+                # 超时时不阻塞，继续执行
+                return
 
         if not bot or not bot.status:
             raise SkipPluginException("Bot不存在或休眠中阻断权限检测...")

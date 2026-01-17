@@ -32,6 +32,26 @@ Config.add_plugin_config(
     2,
     help="ban cache ttl seconds",
 )
+Config.add_plugin_config(
+    "hook",
+    "BAN_CACHE_TTL_POSITIVE",
+    30,
+    help="ban cache ttl seconds for banned users",
+)
+Config.add_plugin_config(
+    "hook",
+    "BAN_CACHE_TTL_NEGATIVE",
+    5,
+    help="ban cache ttl seconds for non-banned users",
+)
+
+def _coerce_ttl(value, default):
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return default
+    return value_int if value_int >= 0 else default
+
 
 _ban_cache_ttl_value = Config.get_config("hook", "BAN_CACHE_TTL", 2)
 try:
@@ -39,9 +59,18 @@ try:
 except (TypeError, ValueError):
     _ban_cache_ttl_value = 2
 
+_ban_cache_ttl_positive = _coerce_ttl(
+    Config.get_config("hook", "BAN_CACHE_TTL_POSITIVE", _ban_cache_ttl_value),
+    _ban_cache_ttl_value,
+)
+_ban_cache_ttl_negative = _coerce_ttl(
+    Config.get_config("hook", "BAN_CACHE_TTL_NEGATIVE", _ban_cache_ttl_value),
+    _ban_cache_ttl_value,
+)
+
 BAN_CACHE = (
-    CacheDict("AUTH_BAN_CACHE", expire=_ban_cache_ttl_value)
-    if _ban_cache_ttl_value and _ban_cache_ttl_value > 0
+    CacheDict("AUTH_BAN_CACHE", expire=0)
+    if max(_ban_cache_ttl_positive, _ban_cache_ttl_negative) > 0
     else None
 )
 
@@ -57,6 +86,15 @@ def _ban_cache_get(key: str) -> int | None:
         return BAN_CACHE[key]
     except KeyError:
         return None
+
+
+def _ban_cache_set(key: str, value: int) -> None:
+    if not BAN_CACHE:
+        return
+    ttl = _ban_cache_ttl_positive if value else _ban_cache_ttl_negative
+    if ttl <= 0:
+        return
+    BAN_CACHE.set(key, value, expire=ttl)
 
 
 async def calculate_ban_time(ban_record: BanConsole | None) -> int:
@@ -133,8 +171,7 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                     f"查询ban记录超时: user_id={user_id}, group_id={group_id}",
                     LOGGER_COMMAND,
                 )
-                if BAN_CACHE:
-                    BAN_CACHE[cache_key] = 0
+                _ban_cache_set(cache_key, 0)
                 return 0
 
         # 检查记录并计算ban时间
@@ -146,8 +183,7 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
 
         # 如果没有找到记录，返回0
         if not results:
-            if BAN_CACHE:
-                BAN_CACHE[cache_key] = 0
+            _ban_cache_set(cache_key, 0)
             return 0
 
         logger.debug(f"查询到的ban记录: {results}", LOGGER_COMMAND)
@@ -160,8 +196,7 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
                 if ban_time == -1 or ban_time > max_ban_time:
                     max_ban_time = ban_time
 
-        if BAN_CACHE:
-            BAN_CACHE[cache_key] = max_ban_time
+        _ban_cache_set(cache_key, max_ban_time)
         return max_ban_time
     finally:
         # 记录执行时间
