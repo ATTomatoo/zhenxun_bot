@@ -9,7 +9,10 @@ from pydantic import BaseModel
 from zhenxun.configs.config import Config
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.plugin_limit import PluginLimit
-from zhenxun.services.cache.runtime_cache import PluginLimitMemoryCache
+from zhenxun.services.cache.runtime_cache import (
+    PluginLimitMemoryCache,
+    PluginLimitSnapshot,
+)
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import LimitWatchType, PluginLimitType
@@ -41,7 +44,7 @@ async def _():
 
 
 class Limit(BaseModel):
-    limit: PluginLimit
+    limit: PluginLimit | PluginLimitSnapshot
     limiter: FreqLimiter | UserBlockLimiter | CountLimiter
 
     class Config:
@@ -49,7 +52,10 @@ class Limit(BaseModel):
 
 
 def _limit_notice_key(
-    limit: PluginLimit, user_id: str, group_id: str | None, channel_id: str | None
+    limit: PluginLimit | PluginLimitSnapshot,
+    user_id: str,
+    group_id: str | None,
+    channel_id: str | None,
 ) -> str:
     key = user_id
     if group_id and limit.watch_type == LimitWatchType.GROUP:
@@ -85,7 +91,7 @@ class LimitManager:
 
     # 模块限制缓存，避免频繁查询数据库
     module_limit_cache: ClassVar[
-        dict[str, tuple[float, list[PluginLimit], bool]]
+        dict[str, tuple[float, list[PluginLimit | PluginLimitSnapshot], bool]]
     ] = {}
     module_cache_ttl: ClassVar[float] = 60  # 模块缓存有效期（秒）
     module_cache_error_ttl: ClassVar[float] = 5  # 超时缓存有效期（秒）
@@ -177,7 +183,9 @@ class LimitManager:
             limiter.set_false(key_type)
 
     @classmethod
-    async def get_module_limits(cls, module: str) -> list[PluginLimit]:
+    async def get_module_limits(
+        cls, module: str
+    ) -> list[PluginLimit | PluginLimitSnapshot]:
         """获取模块的限制信息，使用缓存减少数据库查询
 
         参数:
