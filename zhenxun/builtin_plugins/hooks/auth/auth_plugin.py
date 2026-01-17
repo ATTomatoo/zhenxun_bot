@@ -36,17 +36,12 @@ class GroupCheck:
                 in self.group_data.superuser_block_plugin
             ):
                 if freq.is_send_limit_message(self.plugin, self.group_id, self.is_poke):
-                    try:
-                        await asyncio.wait_for(
-                            send_message(
-                                self.session,
-                                "超级管理员禁用了该群此功能...",
-                                self.group_id,
-                            ),
-                            timeout=DB_TIMEOUT_SECONDS,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.error(f"发送消息超时: {self.group_id}", LOGGER_COMMAND)
+                    await send_message(
+                        self.session,
+                        "超级管理员禁用了该群此功能...",
+                        self.group_id,
+                        background=True,
+                    )
                 raise SkipPluginException(
                     f"{self.plugin.name}({self.plugin.module})"
                     f" 超级管理员禁用了该群此功能..."
@@ -59,15 +54,12 @@ class GroupCheck:
                 in self.group_data.block_plugin
             ):
                 if freq.is_send_limit_message(self.plugin, self.group_id, self.is_poke):
-                    try:
-                        await asyncio.wait_for(
-                            send_message(
-                                self.session, "该群未开启此功能...", self.group_id
-                            ),
-                            timeout=DB_TIMEOUT_SECONDS,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.error(f"发送消息超时: {self.group_id}", LOGGER_COMMAND)
+                    await send_message(
+                        self.session,
+                        "该群未开启此功能...",
+                        self.group_id,
+                        background=True,
+                    )
                 raise SkipPluginException(
                     f"{self.plugin.name}({self.plugin.module}) 未开启此功能..."
                 )
@@ -75,15 +67,12 @@ class GroupCheck:
             # 检查全局禁用
             if self.plugin.block_type == BlockType.GROUP:
                 if freq.is_send_limit_message(self.plugin, self.group_id, self.is_poke):
-                    try:
-                        await asyncio.wait_for(
-                            send_message(
-                                self.session, "该功能在群组中已被禁用...", self.group_id
-                            ),
-                            timeout=DB_TIMEOUT_SECONDS,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.error(f"发送消息超时: {self.group_id}", LOGGER_COMMAND)
+                    await send_message(
+                        self.session,
+                        "该功能在群组中已被禁用...",
+                        self.group_id,
+                        background=True,
+                    )
                 raise SkipPluginException(
                     f"{self.plugin.name}({self.plugin.module})该插件在群组中已被禁用..."
                 )
@@ -117,13 +106,11 @@ class PluginCheck:
         """
         if plugin.block_type == BlockType.PRIVATE:
             if freq.is_send_limit_message(plugin, self.session.user.id, self.is_poke):
-                try:
-                    await asyncio.wait_for(
-                        send_message(self.session, "该功能在私聊中已被禁用..."),
-                        timeout=DB_TIMEOUT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
-                    logger.error("发送消息超时", LOGGER_COMMAND)
+                await send_message(
+                    self.session,
+                    "该功能在私聊中已被禁用...",
+                    background=True,
+                )
             raise SkipPluginException(
                 f"{plugin.name}({plugin.module}) 该插件在私聊中已被禁用..."
             )
@@ -147,13 +134,12 @@ class PluginCheck:
 
             sid = self.group_id or self.session.user.id
             if freq.is_send_limit_message(plugin, sid, self.is_poke):
-                try:
-                    await asyncio.wait_for(
-                        send_message(self.session, "全局未开启此功能...", sid),
-                        timeout=DB_TIMEOUT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
-                    logger.error(f"发送消息超时: {sid}", LOGGER_COMMAND)
+                await send_message(
+                    self.session,
+                    "全局未开启此功能...",
+                    sid,
+                    background=True,
+                )
             raise SkipPluginException(
                 f"{plugin.name}({plugin.module}) 全局未开启此功能..."
             )

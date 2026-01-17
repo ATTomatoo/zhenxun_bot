@@ -1,13 +1,15 @@
 import asyncio
 import time
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import nonebot
 from nonebot_plugin_uninfo import Uninfo
 from pydantic import BaseModel
 
+from zhenxun.configs.config import Config
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.plugin_limit import PluginLimit
+from zhenxun.services.cache.runtime_cache import PluginLimitMemoryCache
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import LimitWatchType, PluginLimitType
@@ -22,6 +24,15 @@ from .exception import SkipPluginException
 
 driver = nonebot.get_driver()
 
+Config.add_plugin_config(
+    "hook",
+    "AUTH_LIMIT_NOTICE_CD",
+    2,
+    help="auth limit notice cooldown seconds",
+)
+_LIMIT_NOTICE_CD = int(Config.get_config("hook", "AUTH_LIMIT_NOTICE_CD", 2) or 2)
+_LIMIT_NOTICE_LIMITER = FreqLimiter(_LIMIT_NOTICE_CD)
+
 
 @PriorityLifecycle.on_startup(priority=5)
 async def _():
@@ -35,6 +46,31 @@ class Limit(BaseModel):
 
     class Config:
         arbitrary_types_allowed = True
+
+
+def _limit_notice_key(
+    limit: PluginLimit, user_id: str, group_id: str | None, channel_id: str | None
+) -> str:
+    key = user_id
+    if group_id and limit.watch_type == LimitWatchType.GROUP:
+        key = channel_id or group_id
+    return f"{limit.module}:{limit.limit_type}:{key}"
+
+
+def _send_limit_notice(message: str, format_kwargs: dict[str, Any], key: str) -> None:
+    if not _LIMIT_NOTICE_LIMITER.check(key):
+        return
+    _LIMIT_NOTICE_LIMITER.start_cd(key)
+
+    async def _send():
+        try:
+            await MessageUtils.build_message(
+                message, format_args=format_kwargs
+            ).send()
+        except Exception as exc:
+            logger.error("limit notice send failed", LOGGER_COMMAND, e=exc)
+
+    asyncio.create_task(_send())
 
 
 class LimitManager:
@@ -73,14 +109,8 @@ class LimitManager:
         cls.is_updating = True
         try:
             start_time = time.time()
-            try:
-                limit_list = await asyncio.wait_for(
-                    PluginLimit.filter(status=True).all(), timeout=DB_TIMEOUT_SECONDS
-                )
-            except asyncio.TimeoutError:
-                logger.error("查询限制信息超时", LOGGER_COMMAND)
-                cls.is_updating = False
-                return
+            await PluginLimitMemoryCache.ensure_loaded()
+            limit_list = PluginLimitMemoryCache.get_all_limits()
 
             # 清空旧数据
             cls.add_module = []
@@ -165,26 +195,14 @@ class LimitManager:
             if current_time - cache_time < ttl:
                 return limits
 
-        # 缓存不存在或已过期，从数据库查询
+        # 缓存不存在或已过期，从内存缓存获取
         try:
-            start_time = time.time()
-            limits = await asyncio.wait_for(
-                PluginLimit.filter(module=module, status=True).all(),
-                timeout=DB_TIMEOUT_SECONDS,
-            )
-            elapsed = time.time() - start_time
-            if elapsed > WARNING_THRESHOLD:  # 记录耗时超过500ms的查询
-                logger.warning(
-                    f"查询模块限制信息耗时: {elapsed:.3f}s, 模块: {module}",
-                    LOGGER_COMMAND,
-                )
-
-            # 更新缓存
+            await PluginLimitMemoryCache.ensure_loaded()
+            limits = await PluginLimitMemoryCache.get_limits(module)
             cls.module_limit_cache[module] = (current_time, limits, False)
             return limits
-        except asyncio.TimeoutError:
-            logger.error(f"查询模块限制信息超时: {module}", LOGGER_COMMAND)
-            # 超时时返回空列表，避免阻塞
+        except Exception as exc:
+            logger.error(f"get module limits failed: {module}", LOGGER_COMMAND, e=exc)
             cls.module_limit_cache[module] = (current_time, [], True)
             return []
 
@@ -280,15 +298,10 @@ class LimitManager:
                     left_time = limiter.left_time(key_type)
                     cd_str = TimeUtils.format_duration(left_time)
                     format_kwargs = {"cd": cd_str}
-                try:
-                    await asyncio.wait_for(
-                        MessageUtils.build_message(
-                            limit.result, format_args=format_kwargs
-                        ).send(),
-                        timeout=DB_TIMEOUT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
-                    logger.error(f"发送限制消息超时: {limit.module}", LOGGER_COMMAND)
+                notice_key = _limit_notice_key(
+                    limit, user_id, group_id, channel_id
+                )
+                _send_limit_notice(limit.result, format_kwargs, notice_key)
             raise SkipPluginException(
                 f"{limit.module}({limit.limit_type}) 正在限制中..."
             )

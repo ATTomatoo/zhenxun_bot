@@ -1,6 +1,7 @@
 from tortoise import fields
 
 from zhenxun.services.db_context import Model
+from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.utils.enum import CacheType
 
 
@@ -123,6 +124,28 @@ class LevelUser(Model):
         if user := await cls.get_or_none(user_id=user_id, group_id=group_id):
             return user.group_flag == 1
         return False
+
+    @classmethod
+    async def create(cls, *args, **kwargs):
+        result = await super().create(*args, **kwargs)
+        await LevelUserMemoryCache.upsert_from_model(result)
+        return result
+
+    @classmethod
+    async def update_or_create(cls, *args, **kwargs):
+        result = await super().update_or_create(*args, **kwargs)
+        await LevelUserMemoryCache.upsert_from_model(result[0])
+        return result
+
+    async def save(self, *args, **kwargs):
+        await super().save(*args, **kwargs)
+        await LevelUserMemoryCache.upsert_from_model(self)
+
+    async def delete(self, *args, **kwargs):
+        user_id = self.user_id
+        group_id = self.group_id
+        await super().delete(*args, **kwargs)
+        await LevelUserMemoryCache.remove(user_id, group_id)
 
     @classmethod
     async def _run_script(cls):

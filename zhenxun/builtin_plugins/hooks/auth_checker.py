@@ -14,7 +14,12 @@ from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
-from zhenxun.services.cache.runtime_cache import PluginInfoMemoryCache
+from zhenxun.services.cache.runtime_cache import (
+    BotMemoryCache,
+    GroupMemoryCache,
+    LevelUserMemoryCache,
+    PluginInfoMemoryCache,
+)
 from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
@@ -207,14 +212,7 @@ async def _get_group_cached(entity, event_cache):
         return None
     if event_cache is not None and "group" in event_cache:
         return event_cache["group"]
-    group_dao = DataAccess(GroupConsole)
-    async with _db_section():
-        group = await with_timeout(
-            group_dao.safe_get_or_none(
-                group_id=entity.group_id, channel_id__isnull=True
-            ),
-            name="get_group",
-        )
+    group = await GroupMemoryCache.get(entity.group_id, entity.channel_id)
     if event_cache is not None:
         event_cache["group"] = group
     return group
@@ -223,17 +221,7 @@ async def _get_group_cached(entity, event_cache):
 async def _get_bot_data_cached(bot_id: str, event_cache):
     if event_cache is not None and "bot_data" in event_cache:
         return event_cache.get("bot_data"), event_cache.get("bot_timeout", False)
-    bot_dao = DataAccess(BotConsole)
-    try:
-        async with _db_section():
-            bot = await with_timeout(
-                bot_dao.safe_get_or_none(bot_id=bot_id), name="get_bot"
-            )
-    except asyncio.TimeoutError:
-        if event_cache is not None:
-            event_cache["bot_data"] = None
-            event_cache["bot_timeout"] = True
-        return None, True
+    bot = await BotMemoryCache.get(bot_id)
     if event_cache is not None:
         event_cache["bot_data"] = bot
         event_cache["bot_timeout"] = False
@@ -243,29 +231,7 @@ async def _get_bot_data_cached(bot_id: str, event_cache):
 async def _get_admin_levels_cached(session: Uninfo, entity, event_cache):
     if event_cache is not None and "admin_levels" in event_cache:
         return event_cache.get("admin_levels"), event_cache.get("admin_timeout", False)
-    level_dao = DataAccess(LevelUser)
-    global_user_task = level_dao.safe_get_or_none(
-        user_id=session.user.id, group_id__isnull=True
-    )
-    group_users_task = None
-    if entity.group_id:
-        group_users_task = level_dao.safe_get_or_none(
-            user_id=session.user.id, group_id=entity.group_id
-        )
-    try:
-        async with _db_section():
-            results = await with_timeout(
-                asyncio.gather(global_user_task, group_users_task or asyncio.sleep(0)),
-                name="get_admin_levels",
-            )
-    except asyncio.TimeoutError:
-        if event_cache is not None:
-            event_cache["admin_levels"] = (None, None)
-            event_cache["admin_timeout"] = True
-        return (None, None), True
-    global_user = results[0]
-    group_users = results[1] if group_users_task else None
-    levels = (global_user, group_users)
+    levels = await LevelUserMemoryCache.get_levels(session.user.id, entity.group_id)
     if event_cache is not None:
         event_cache["admin_levels"] = levels
         event_cache["admin_timeout"] = False

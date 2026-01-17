@@ -3,6 +3,7 @@ from typing import Literal, overload
 from tortoise import fields
 
 from zhenxun.services.db_context import Model
+from zhenxun.services.cache.runtime_cache import BotMemoryCache
 from zhenxun.utils.enum import CacheType
 
 
@@ -160,8 +161,10 @@ class BotConsole(Model):
             affected_rows = await cls.filter(bot_id=bot_id).update(status=status)
             if not affected_rows:
                 raise ValueError(f"未找到 bot_id: {bot_id}")
+            await BotMemoryCache.update_status(bot_id, status)
         else:
             await cls.all().update(status=status)
+            await BotMemoryCache.refresh()
 
     @overload
     @classmethod
@@ -433,6 +436,27 @@ class BotConsole(Model):
         """
         bot_data, _ = await cls.get_or_create(bot_id=bot_id)
         return cls.format(task_name) in bot_data.block_tasks
+
+    @classmethod
+    async def create(cls, *args, **kwargs):
+        result = await super().create(*args, **kwargs)
+        await BotMemoryCache.upsert_from_model(result)
+        return result
+
+    @classmethod
+    async def update_or_create(cls, *args, **kwargs):
+        result = await super().update_or_create(*args, **kwargs)
+        await BotMemoryCache.upsert_from_model(result[0])
+        return result
+
+    async def save(self, *args, **kwargs):
+        await super().save(*args, **kwargs)
+        await BotMemoryCache.upsert_from_model(self)
+
+    async def delete(self, *args, **kwargs):
+        bot_id = self.bot_id
+        await super().delete(*args, **kwargs)
+        await BotMemoryCache.remove(bot_id)
 
     @classmethod
     async def _run_script(cls):

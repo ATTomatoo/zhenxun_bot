@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
+import uuid
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from zhenxun.configs.config import Config
 from zhenxun.services.log import logger
+from zhenxun.services.cache.config import CacheMode
+from zhenxun.utils.enum import LimitCheckType, LimitWatchType, PluginLimitType
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 
 LOG_COMMAND = "RuntimeCache"
@@ -35,6 +40,66 @@ Config.add_plugin_config(
     True,
     help="delete expired ban records from database",
 )
+Config.add_plugin_config(
+    "hook",
+    "BOT_MEM_REFRESH_INTERVAL",
+    60,
+    help="bot memory cache refresh seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "BOT_MEM_NEGATIVE_TTL",
+    60,
+    help="bot memory negative cache ttl seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "GROUP_MEM_REFRESH_INTERVAL",
+    60,
+    help="group memory cache refresh seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "GROUP_MEM_NEGATIVE_TTL",
+    60,
+    help="group memory negative cache ttl seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "LEVEL_MEM_REFRESH_INTERVAL",
+    120,
+    help="level memory cache refresh seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "LEVEL_MEM_NEGATIVE_TTL",
+    60,
+    help="level memory negative cache ttl seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "LIMIT_MEM_REFRESH_INTERVAL",
+    60,
+    help="plugin limit memory cache refresh seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "LIMIT_MEM_NEGATIVE_TTL",
+    30,
+    help="plugin limit negative cache ttl seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "RUNTIME_CACHE_SYNC_ENABLED",
+    True,
+    help="enable redis pubsub runtime cache sync",
+)
+Config.add_plugin_config(
+    "hook",
+    "RUNTIME_CACHE_SYNC_CHANNEL",
+    "ZHENXUN_RUNTIME_CACHE_SYNC",
+    help="redis pubsub channel for runtime cache sync",
+)
 
 
 def _coerce_int(value, default: int) -> int:
@@ -43,6 +108,23 @@ def _coerce_int(value, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return value_int if value_int >= 0 else default
+
+
+INSTANCE_ID = uuid.uuid4().hex
+
+
+def _env_get(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        value = os.getenv(name.lower())
+    return value if value is not None else default
+
+
+def _redis_enabled() -> bool:
+    mode = (_env_get("CACHE_MODE") or "").upper()
+    if mode != CacheMode.REDIS:
+        return False
+    return bool(_env_get("REDIS_HOST"))
 
 
 @dataclass(frozen=True)
@@ -60,6 +142,358 @@ class BanEntry:
         now_ts = time.time() if now is None else now
         left = int(self.ban_time + self.duration - now_ts)
         return left if left > 0 else 0
+
+
+@dataclass(frozen=True)
+class BotSnapshot:
+    bot_id: str
+    status: bool
+    platform: str | None
+    block_plugins: str
+    block_tasks: str
+    available_plugins: str
+    available_tasks: str
+
+    @classmethod
+    def from_model(cls, model) -> "BotSnapshot":
+        return cls(
+            bot_id=str(model.bot_id),
+            status=bool(model.status),
+            platform=getattr(model, "platform", None),
+            block_plugins=getattr(model, "block_plugins", "") or "",
+            block_tasks=getattr(model, "block_tasks", "") or "",
+            available_plugins=getattr(model, "available_plugins", "") or "",
+            available_tasks=getattr(model, "available_tasks", "") or "",
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "bot_id": self.bot_id,
+            "status": self.status,
+            "platform": self.platform,
+            "block_plugins": self.block_plugins,
+            "block_tasks": self.block_tasks,
+            "available_plugins": self.available_plugins,
+            "available_tasks": self.available_tasks,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "BotSnapshot":
+        return cls(
+            bot_id=str(payload.get("bot_id", "")),
+            status=bool(payload.get("status", True)),
+            platform=payload.get("platform"),
+            block_plugins=payload.get("block_plugins", "") or "",
+            block_tasks=payload.get("block_tasks", "") or "",
+            available_plugins=payload.get("available_plugins", "") or "",
+            available_tasks=payload.get("available_tasks", "") or "",
+        )
+
+
+@dataclass(frozen=True)
+class GroupSnapshot:
+    group_id: str
+    channel_id: str | None
+    group_name: str
+    max_member_count: int
+    member_count: int
+    status: bool
+    level: int
+    is_super: bool
+    group_flag: int
+    block_plugin: str
+    superuser_block_plugin: str
+    block_task: str
+    superuser_block_task: str
+    platform: str | None
+
+    @classmethod
+    def from_model(cls, model) -> "GroupSnapshot":
+        return cls(
+            group_id=str(model.group_id),
+            channel_id=getattr(model, "channel_id", None),
+            group_name=getattr(model, "group_name", "") or "",
+            max_member_count=int(getattr(model, "max_member_count", 0) or 0),
+            member_count=int(getattr(model, "member_count", 0) or 0),
+            status=bool(getattr(model, "status", True)),
+            level=int(getattr(model, "level", 0) or 0),
+            is_super=bool(getattr(model, "is_super", False)),
+            group_flag=int(getattr(model, "group_flag", 0) or 0),
+            block_plugin=getattr(model, "block_plugin", "") or "",
+            superuser_block_plugin=getattr(model, "superuser_block_plugin", "") or "",
+            block_task=getattr(model, "block_task", "") or "",
+            superuser_block_task=getattr(model, "superuser_block_task", "") or "",
+            platform=getattr(model, "platform", None),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "group_id": self.group_id,
+            "channel_id": self.channel_id,
+            "group_name": self.group_name,
+            "max_member_count": self.max_member_count,
+            "member_count": self.member_count,
+            "status": self.status,
+            "level": self.level,
+            "is_super": self.is_super,
+            "group_flag": self.group_flag,
+            "block_plugin": self.block_plugin,
+            "superuser_block_plugin": self.superuser_block_plugin,
+            "block_task": self.block_task,
+            "superuser_block_task": self.superuser_block_task,
+            "platform": self.platform,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "GroupSnapshot":
+        return cls(
+            group_id=str(payload.get("group_id", "")),
+            channel_id=payload.get("channel_id"),
+            group_name=payload.get("group_name", "") or "",
+            max_member_count=int(payload.get("max_member_count", 0) or 0),
+            member_count=int(payload.get("member_count", 0) or 0),
+            status=bool(payload.get("status", True)),
+            level=int(payload.get("level", 0) or 0),
+            is_super=bool(payload.get("is_super", False)),
+            group_flag=int(payload.get("group_flag", 0) or 0),
+            block_plugin=payload.get("block_plugin", "") or "",
+            superuser_block_plugin=payload.get("superuser_block_plugin", "") or "",
+            block_task=payload.get("block_task", "") or "",
+            superuser_block_task=payload.get("superuser_block_task", "") or "",
+            platform=payload.get("platform"),
+        )
+
+
+@dataclass(frozen=True)
+class LevelUserSnapshot:
+    user_id: str
+    group_id: str | None
+    user_level: int
+    group_flag: int
+
+    @classmethod
+    def from_model(cls, model) -> "LevelUserSnapshot":
+        return cls(
+            user_id=str(model.user_id),
+            group_id=getattr(model, "group_id", None),
+            user_level=int(getattr(model, "user_level", 0) or 0),
+            group_flag=int(getattr(model, "group_flag", 0) or 0),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "group_id": self.group_id,
+            "user_level": self.user_level,
+            "group_flag": self.group_flag,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "LevelUserSnapshot":
+        return cls(
+            user_id=str(payload.get("user_id", "")),
+            group_id=payload.get("group_id"),
+            user_level=int(payload.get("user_level", 0) or 0),
+            group_flag=int(payload.get("group_flag", 0) or 0),
+        )
+
+
+@dataclass(frozen=True)
+class PluginLimitSnapshot:
+    id: int
+    module: str
+    module_path: str
+    limit_type: PluginLimitType
+    watch_type: LimitWatchType
+    check_type: LimitCheckType
+    status: bool
+    result: str | None
+    cd: int | None
+    max_count: int | None
+
+    @classmethod
+    def from_model(cls, model) -> "PluginLimitSnapshot":
+        return cls(
+            id=int(model.id),
+            module=str(model.module),
+            module_path=str(model.module_path),
+            limit_type=model.limit_type,
+            watch_type=model.watch_type,
+            check_type=model.check_type,
+            status=bool(model.status),
+            result=getattr(model, "result", None),
+            cd=getattr(model, "cd", None),
+            max_count=getattr(model, "max_count", None),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "module": self.module,
+            "module_path": self.module_path,
+            "limit_type": self.limit_type.value,
+            "watch_type": self.watch_type.value,
+            "check_type": self.check_type.value,
+            "status": self.status,
+            "result": self.result,
+            "cd": self.cd,
+            "max_count": self.max_count,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "PluginLimitSnapshot":
+        return cls(
+            id=int(payload.get("id", 0) or 0),
+            module=str(payload.get("module", "")),
+            module_path=str(payload.get("module_path", "")),
+            limit_type=PluginLimitType(payload.get("limit_type", PluginLimitType.CD)),
+            watch_type=LimitWatchType(payload.get("watch_type", LimitWatchType.USER)),
+            check_type=LimitCheckType(payload.get("check_type", LimitCheckType.ALL)),
+            status=bool(payload.get("status", True)),
+            result=payload.get("result"),
+            cd=payload.get("cd"),
+            max_count=payload.get("max_count"),
+        )
+
+
+class RuntimeCacheSync:
+    _redis: ClassVar[Any | None] = None
+    _pubsub: ClassVar[Any | None] = None
+    _task: ClassVar[asyncio.Task | None] = None
+    _ready: ClassVar[bool] = False
+    _channel: ClassVar[str] = ""
+
+    @classmethod
+    def _sync_enabled(cls) -> bool:
+        enabled = bool(
+            Config.get_config("hook", "RUNTIME_CACHE_SYNC_ENABLED", True)
+        )
+        return enabled and _redis_enabled()
+
+    @classmethod
+    async def start(cls) -> None:
+        if cls._ready:
+            return
+        if not cls._sync_enabled():
+            return
+        try:
+            import redis.asyncio as redis_async
+        except ImportError:
+            logger.warning("redis not installed, runtime cache sync disabled", LOG_COMMAND)
+            return
+
+        host = _env_get("REDIS_HOST")
+        if not host:
+            return
+        port = _coerce_int(_env_get("REDIS_PORT"), 6379)
+        password = _env_get("REDIS_PASSWORD")
+        cls._channel = str(
+            Config.get_config(
+                "hook", "RUNTIME_CACHE_SYNC_CHANNEL", "ZHENXUN_RUNTIME_CACHE_SYNC"
+            )
+        )
+        try:
+            cls._redis = redis_async.Redis(
+                host=host,
+                port=port,
+                password=password,
+                decode_responses=True,
+            )
+            cls._pubsub = cls._redis.pubsub()
+            await cls._pubsub.subscribe(cls._channel)
+            cls._task = asyncio.create_task(cls._listen_loop())
+            cls._ready = True
+            logger.info("runtime cache sync enabled", LOG_COMMAND)
+        except Exception as exc:
+            logger.error("runtime cache sync init failed", LOG_COMMAND, e=exc)
+            await cls.stop()
+
+    @classmethod
+    async def stop(cls) -> None:
+        if cls._task and not cls._task.done():
+            cls._task.cancel()
+        cls._task = None
+        try:
+            if cls._pubsub is not None:
+                await cls._pubsub.close()
+        except Exception:
+            pass
+        cls._pubsub = None
+        try:
+            if cls._redis is not None:
+                await cls._redis.close()
+        except Exception:
+            pass
+        cls._redis = None
+        cls._ready = False
+
+    @classmethod
+    def publish_event(cls, cache_type: str, action: str, data: dict[str, Any]) -> None:
+        if not cls._ready:
+            return
+        payload = {
+            "source": INSTANCE_ID,
+            "type": cache_type,
+            "action": action,
+            "data": data,
+        }
+        asyncio.create_task(cls._publish(payload))
+
+    @classmethod
+    async def _publish(cls, payload: dict[str, Any]) -> None:
+        if not cls._ready or cls._redis is None:
+            return
+        try:
+            await cls._redis.publish(cls._channel, json.dumps(payload))
+        except Exception as exc:
+            logger.error("runtime cache sync publish failed", LOG_COMMAND, e=exc)
+
+    @classmethod
+    async def _listen_loop(cls) -> None:
+        if cls._pubsub is None:
+            return
+        try:
+            while True:
+                message = await cls._pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
+                if not message:
+                    await asyncio.sleep(0.05)
+                    continue
+                await cls._handle_message(message.get("data"))
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.error("runtime cache sync listener failed", LOG_COMMAND, e=exc)
+
+    @classmethod
+    async def _handle_message(cls, raw: Any) -> None:
+        if raw is None:
+            return
+        if isinstance(raw, (bytes, bytearray)):
+            try:
+                raw = raw.decode()
+            except Exception:
+                return
+        if not raw:
+            return
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return
+        if payload.get("source") == INSTANCE_ID:
+            return
+        cache_type = payload.get("type")
+        action = payload.get("action")
+        data = payload.get("data") or {}
+        if cache_type == "bot":
+            await BotMemoryCache.apply_sync_event(action, data)
+        elif cache_type == "group":
+            await GroupMemoryCache.apply_sync_event(action, data)
+        elif cache_type == "level":
+            await LevelUserMemoryCache.apply_sync_event(action, data)
+        elif cache_type == "plugin_limit":
+            await PluginLimitMemoryCache.apply_sync_event(action, data)
 
 
 class PluginInfoMemoryCache:
@@ -134,6 +568,655 @@ class PluginInfoMemoryCache:
         interval = _coerce_int(
             Config.get_config("hook", "PLUGININFO_MEM_REFRESH_INTERVAL", 300),
             300,
+        )
+        if interval <= 0:
+            return
+        if cls._refresh_task and not cls._refresh_task.done():
+            return
+        cls._refresh_task = asyncio.create_task(cls._refresh_loop(interval))
+
+    @classmethod
+    def stop_tasks(cls) -> None:
+        if cls._refresh_task and not cls._refresh_task.done():
+            cls._refresh_task.cancel()
+        cls._refresh_task = None
+
+
+class BotMemoryCache:
+    _lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    _by_id: ClassVar[dict[str, BotSnapshot]] = {}
+    _negative: ClassVar[dict[str, float]] = {}
+    _loaded: ClassVar[bool] = False
+    _refresh_task: ClassVar[asyncio.Task | None] = None
+
+    @classmethod
+    def _normalize(cls, bot_id: str | None) -> str | None:
+        if bot_id is None:
+            return None
+        bot_id = bot_id.strip()
+        return bot_id if bot_id else None
+
+    @classmethod
+    def _negative_ttl(cls) -> int:
+        return _coerce_int(
+            Config.get_config("hook", "BOT_MEM_NEGATIVE_TTL", 60), 60
+        )
+
+    @classmethod
+    def _is_negative(cls, bot_id: str) -> bool:
+        expire_at = cls._negative.get(bot_id)
+        if not expire_at:
+            return False
+        if expire_at <= time.time():
+            cls._negative.pop(bot_id, None)
+            return False
+        return True
+
+    @classmethod
+    def _mark_negative(cls, bot_id: str) -> None:
+        ttl = cls._negative_ttl()
+        if ttl <= 0:
+            return
+        cls._negative[bot_id] = time.time() + ttl
+
+    @classmethod
+    async def refresh(cls) -> None:
+        from zhenxun.models.bot_console import BotConsole
+
+        async with cls._lock:
+            records = await BotConsole.all()
+            cls._by_id = {str(r.bot_id): BotSnapshot.from_model(r) for r in records}
+            cls._negative = {}
+            cls._loaded = True
+            logger.debug(f"bot cache refreshed: {len(cls._by_id)} entries", LOG_COMMAND)
+
+    @classmethod
+    async def ensure_loaded(cls) -> None:
+        if cls._loaded:
+            return
+        await cls.refresh()
+
+    @classmethod
+    async def get(cls, bot_id: str | None) -> BotSnapshot | None:
+        bot_id = cls._normalize(bot_id)
+        if not bot_id:
+            return None
+        if not cls._loaded:
+            await cls.ensure_loaded()
+        entry = cls._by_id.get(bot_id)
+        if entry:
+            return entry
+        if cls._is_negative(bot_id):
+            return None
+        cls._mark_negative(bot_id)
+        return None
+
+    @classmethod
+    async def update_status(cls, bot_id: str | None, status: bool) -> None:
+        bot_id = cls._normalize(bot_id)
+        if not bot_id:
+            return
+        async with cls._lock:
+            entry = cls._by_id.get(bot_id)
+            if not entry:
+                return
+            updated = BotSnapshot(
+                bot_id=entry.bot_id,
+                status=bool(status),
+                platform=entry.platform,
+                block_plugins=entry.block_plugins,
+                block_tasks=entry.block_tasks,
+                available_plugins=entry.available_plugins,
+                available_tasks=entry.available_tasks,
+            )
+            cls._by_id[bot_id] = updated
+        RuntimeCacheSync.publish_event("bot", "upsert", updated.to_payload())
+
+    @classmethod
+    async def upsert_from_model(cls, record) -> None:
+        entry = BotSnapshot.from_model(record)
+        async with cls._lock:
+            cls._by_id[entry.bot_id] = entry
+            cls._negative.pop(entry.bot_id, None)
+        RuntimeCacheSync.publish_event("bot", "upsert", entry.to_payload())
+
+    @classmethod
+    async def upsert_from_payload(cls, payload: dict[str, Any]) -> None:
+        entry = BotSnapshot.from_payload(payload)
+        if not entry.bot_id:
+            return
+        async with cls._lock:
+            cls._by_id[entry.bot_id] = entry
+            cls._negative.pop(entry.bot_id, None)
+
+    @classmethod
+    async def remove(cls, bot_id: str | None) -> None:
+        bot_id = cls._normalize(bot_id)
+        if not bot_id:
+            return
+        async with cls._lock:
+            cls._by_id.pop(bot_id, None)
+        RuntimeCacheSync.publish_event("bot", "delete", {"bot_id": bot_id})
+
+    @classmethod
+    async def apply_sync_event(cls, action: str, data: dict[str, Any]) -> None:
+        if action == "upsert":
+            await cls.upsert_from_payload(data)
+        elif action == "delete":
+            await cls.remove(data.get("bot_id"))
+        elif action == "refresh":
+            await cls.refresh()
+
+    @classmethod
+    async def _refresh_loop(cls, interval: int) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await cls.refresh()
+            except Exception as exc:
+                logger.error("bot cache refresh failed", LOG_COMMAND, e=exc)
+
+    @classmethod
+    def start_tasks(cls) -> None:
+        interval = _coerce_int(
+            Config.get_config("hook", "BOT_MEM_REFRESH_INTERVAL", 60), 60
+        )
+        if interval <= 0:
+            return
+        if cls._refresh_task and not cls._refresh_task.done():
+            return
+        cls._refresh_task = asyncio.create_task(cls._refresh_loop(interval))
+
+    @classmethod
+    def stop_tasks(cls) -> None:
+        if cls._refresh_task and not cls._refresh_task.done():
+            cls._refresh_task.cancel()
+        cls._refresh_task = None
+
+
+class GroupMemoryCache:
+    _lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    _by_key: ClassVar[dict[tuple[str, str], GroupSnapshot]] = {}
+    _negative: ClassVar[dict[tuple[str, str], float]] = {}
+    _loaded: ClassVar[bool] = False
+    _refresh_task: ClassVar[asyncio.Task | None] = None
+
+    @classmethod
+    def _normalize(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value if value else None
+
+    @classmethod
+    def _key(
+        cls, group_id: str | None, channel_id: str | None
+    ) -> tuple[str, str] | None:
+        group_id = cls._normalize(group_id)
+        if not group_id:
+            return None
+        channel_id = cls._normalize(channel_id) or ""
+        return (group_id, channel_id)
+
+    @classmethod
+    def _negative_ttl(cls) -> int:
+        return _coerce_int(
+            Config.get_config("hook", "GROUP_MEM_NEGATIVE_TTL", 60), 60
+        )
+
+    @classmethod
+    def _is_negative(cls, key: tuple[str, str]) -> bool:
+        expire_at = cls._negative.get(key)
+        if not expire_at:
+            return False
+        if expire_at <= time.time():
+            cls._negative.pop(key, None)
+            return False
+        return True
+
+    @classmethod
+    def _mark_negative(cls, key: tuple[str, str]) -> None:
+        ttl = cls._negative_ttl()
+        if ttl <= 0:
+            return
+        cls._negative[key] = time.time() + ttl
+
+    @classmethod
+    async def refresh(cls) -> None:
+        from zhenxun.models.group_console import GroupConsole
+
+        async with cls._lock:
+            records = await GroupConsole.all()
+            by_key: dict[tuple[str, str], GroupSnapshot] = {}
+            for record in records:
+                entry = GroupSnapshot.from_model(record)
+                key = cls._key(entry.group_id, entry.channel_id)
+                if key:
+                    by_key[key] = entry
+            cls._by_key = by_key
+            cls._negative = {}
+            cls._loaded = True
+            logger.debug(f"group cache refreshed: {len(by_key)} entries", LOG_COMMAND)
+
+    @classmethod
+    async def ensure_loaded(cls) -> None:
+        if cls._loaded:
+            return
+        await cls.refresh()
+
+    @classmethod
+    async def get(
+        cls, group_id: str | None, channel_id: str | None = None
+    ) -> GroupSnapshot | None:
+        key = cls._key(group_id, channel_id)
+        if not key:
+            return None
+        if not cls._loaded:
+            await cls.ensure_loaded()
+        entry = cls._by_key.get(key)
+        if entry:
+            return entry
+        if cls._is_negative(key):
+            return None
+        cls._mark_negative(key)
+        return None
+
+    @classmethod
+    async def upsert_from_model(cls, record) -> None:
+        entry = GroupSnapshot.from_model(record)
+        key = cls._key(entry.group_id, entry.channel_id)
+        if not key:
+            return
+        async with cls._lock:
+            cls._by_key[key] = entry
+            cls._negative.pop(key, None)
+        RuntimeCacheSync.publish_event("group", "upsert", entry.to_payload())
+
+    @classmethod
+    async def upsert_from_payload(cls, payload: dict[str, Any]) -> None:
+        entry = GroupSnapshot.from_payload(payload)
+        key = cls._key(entry.group_id, entry.channel_id)
+        if not key:
+            return
+        async with cls._lock:
+            cls._by_key[key] = entry
+            cls._negative.pop(key, None)
+
+    @classmethod
+    async def remove(cls, group_id: str | None, channel_id: str | None = None) -> None:
+        key = cls._key(group_id, channel_id)
+        if not key:
+            return
+        async with cls._lock:
+            cls._by_key.pop(key, None)
+        RuntimeCacheSync.publish_event(
+            "group", "delete", {"group_id": key[0], "channel_id": key[1] or None}
+        )
+
+    @classmethod
+    async def apply_sync_event(cls, action: str, data: dict[str, Any]) -> None:
+        if action == "upsert":
+            await cls.upsert_from_payload(data)
+        elif action == "delete":
+            await cls.remove(data.get("group_id"), data.get("channel_id"))
+        elif action == "refresh":
+            await cls.refresh()
+
+    @classmethod
+    async def _refresh_loop(cls, interval: int) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await cls.refresh()
+            except Exception as exc:
+                logger.error("group cache refresh failed", LOG_COMMAND, e=exc)
+
+    @classmethod
+    def start_tasks(cls) -> None:
+        interval = _coerce_int(
+            Config.get_config("hook", "GROUP_MEM_REFRESH_INTERVAL", 60), 60
+        )
+        if interval <= 0:
+            return
+        if cls._refresh_task and not cls._refresh_task.done():
+            return
+        cls._refresh_task = asyncio.create_task(cls._refresh_loop(interval))
+
+    @classmethod
+    def stop_tasks(cls) -> None:
+        if cls._refresh_task and not cls._refresh_task.done():
+            cls._refresh_task.cancel()
+        cls._refresh_task = None
+
+
+class LevelUserMemoryCache:
+    _lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    _by_key: ClassVar[dict[tuple[str, str], LevelUserSnapshot]] = {}
+    _negative: ClassVar[dict[tuple[str, str], float]] = {}
+    _loaded: ClassVar[bool] = False
+    _refresh_task: ClassVar[asyncio.Task | None] = None
+
+    @classmethod
+    def _normalize(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value if value else ""
+
+    @classmethod
+    def _key(
+        cls, user_id: str | None, group_id: str | None
+    ) -> tuple[str, str] | None:
+        user_id = cls._normalize(user_id)
+        if not user_id:
+            return None
+        group_id = cls._normalize(group_id) or ""
+        return (user_id, group_id)
+
+    @classmethod
+    def _negative_ttl(cls) -> int:
+        return _coerce_int(
+            Config.get_config("hook", "LEVEL_MEM_NEGATIVE_TTL", 60), 60
+        )
+
+    @classmethod
+    def _is_negative(cls, key: tuple[str, str]) -> bool:
+        expire_at = cls._negative.get(key)
+        if not expire_at:
+            return False
+        if expire_at <= time.time():
+            cls._negative.pop(key, None)
+            return False
+        return True
+
+    @classmethod
+    def _mark_negative(cls, key: tuple[str, str]) -> None:
+        ttl = cls._negative_ttl()
+        if ttl <= 0:
+            return
+        cls._negative[key] = time.time() + ttl
+
+    @classmethod
+    async def refresh(cls) -> None:
+        from zhenxun.models.level_user import LevelUser
+
+        async with cls._lock:
+            records = await LevelUser.all()
+            by_key: dict[tuple[str, str], LevelUserSnapshot] = {}
+            for record in records:
+                entry = LevelUserSnapshot.from_model(record)
+                key = cls._key(entry.user_id, entry.group_id)
+                if key:
+                    by_key[key] = entry
+            cls._by_key = by_key
+            cls._negative = {}
+            cls._loaded = True
+            logger.debug(f"level cache refreshed: {len(by_key)} entries", LOG_COMMAND)
+
+    @classmethod
+    async def ensure_loaded(cls) -> None:
+        if cls._loaded:
+            return
+        await cls.refresh()
+
+    @classmethod
+    async def get(
+        cls, user_id: str | None, group_id: str | None
+    ) -> LevelUserSnapshot | None:
+        key = cls._key(user_id, group_id)
+        if not key:
+            return None
+        if not cls._loaded:
+            await cls.ensure_loaded()
+        entry = cls._by_key.get(key)
+        if entry:
+            return entry
+        if cls._is_negative(key):
+            return None
+        cls._mark_negative(key)
+        return None
+
+    @classmethod
+    async def get_levels(
+        cls, user_id: str | None, group_id: str | None
+    ) -> tuple[LevelUserSnapshot | None, LevelUserSnapshot | None]:
+        if not cls._loaded:
+            await cls.ensure_loaded()
+        global_user = None
+        group_user = None
+        global_key = cls._key(user_id, "")
+        if global_key:
+            global_user = cls._by_key.get(global_key)
+        if group_id:
+            group_key = cls._key(user_id, group_id)
+            if group_key:
+                group_user = cls._by_key.get(group_key)
+        return global_user, group_user
+
+    @classmethod
+    async def upsert_from_model(cls, record) -> None:
+        entry = LevelUserSnapshot.from_model(record)
+        key = cls._key(entry.user_id, entry.group_id)
+        if not key:
+            return
+        async with cls._lock:
+            cls._by_key[key] = entry
+            cls._negative.pop(key, None)
+        RuntimeCacheSync.publish_event("level", "upsert", entry.to_payload())
+
+    @classmethod
+    async def upsert_from_payload(cls, payload: dict[str, Any]) -> None:
+        entry = LevelUserSnapshot.from_payload(payload)
+        key = cls._key(entry.user_id, entry.group_id)
+        if not key:
+            return
+        async with cls._lock:
+            cls._by_key[key] = entry
+            cls._negative.pop(key, None)
+
+    @classmethod
+    async def remove(cls, user_id: str | None, group_id: str | None) -> None:
+        key = cls._key(user_id, group_id)
+        if not key:
+            return
+        async with cls._lock:
+            cls._by_key.pop(key, None)
+        RuntimeCacheSync.publish_event(
+            "level", "delete", {"user_id": key[0], "group_id": key[1] or None}
+        )
+
+    @classmethod
+    async def apply_sync_event(cls, action: str, data: dict[str, Any]) -> None:
+        if action == "upsert":
+            await cls.upsert_from_payload(data)
+        elif action == "delete":
+            await cls.remove(data.get("user_id"), data.get("group_id"))
+        elif action == "refresh":
+            await cls.refresh()
+
+    @classmethod
+    async def _refresh_loop(cls, interval: int) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await cls.refresh()
+            except Exception as exc:
+                logger.error("level cache refresh failed", LOG_COMMAND, e=exc)
+
+    @classmethod
+    def start_tasks(cls) -> None:
+        interval = _coerce_int(
+            Config.get_config("hook", "LEVEL_MEM_REFRESH_INTERVAL", 120), 120
+        )
+        if interval <= 0:
+            return
+        if cls._refresh_task and not cls._refresh_task.done():
+            return
+        cls._refresh_task = asyncio.create_task(cls._refresh_loop(interval))
+
+    @classmethod
+    def stop_tasks(cls) -> None:
+        if cls._refresh_task and not cls._refresh_task.done():
+            cls._refresh_task.cancel()
+        cls._refresh_task = None
+
+
+class PluginLimitMemoryCache:
+    _lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    _by_id: ClassVar[dict[int, PluginLimitSnapshot]] = {}
+    _by_module: ClassVar[dict[str, list[PluginLimitSnapshot]]] = {}
+    _negative: ClassVar[dict[str, float]] = {}
+    _loaded: ClassVar[bool] = False
+    _refresh_task: ClassVar[asyncio.Task | None] = None
+
+    @classmethod
+    def _normalize(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value if value else None
+
+    @classmethod
+    def _negative_ttl(cls) -> int:
+        return _coerce_int(
+            Config.get_config("hook", "LIMIT_MEM_NEGATIVE_TTL", 30), 30
+        )
+
+    @classmethod
+    def _is_negative(cls, module: str) -> bool:
+        expire_at = cls._negative.get(module)
+        if not expire_at:
+            return False
+        if expire_at <= time.time():
+            cls._negative.pop(module, None)
+            return False
+        return True
+
+    @classmethod
+    def _mark_negative(cls, module: str) -> None:
+        ttl = cls._negative_ttl()
+        if ttl <= 0:
+            return
+        cls._negative[module] = time.time() + ttl
+
+    @classmethod
+    async def refresh(cls) -> None:
+        from zhenxun.models.plugin_limit import PluginLimit
+
+        async with cls._lock:
+            records = await PluginLimit.filter(status=True).all()
+            by_id: dict[int, PluginLimitSnapshot] = {}
+            by_module: dict[str, list[PluginLimitSnapshot]] = {}
+            for record in records:
+                entry = PluginLimitSnapshot.from_model(record)
+                by_id[entry.id] = entry
+                by_module.setdefault(entry.module, []).append(entry)
+            cls._by_id = by_id
+            cls._by_module = by_module
+            cls._negative = {}
+            cls._loaded = True
+            logger.debug(
+                f"plugin limit cache refreshed: {len(by_id)} entries",
+                LOG_COMMAND,
+            )
+
+    @classmethod
+    async def ensure_loaded(cls) -> None:
+        if cls._loaded:
+            return
+        await cls.refresh()
+
+    @classmethod
+    async def get_limits(cls, module: str) -> list[PluginLimitSnapshot]:
+        module = cls._normalize(module)
+        if not module:
+            return []
+        if not cls._loaded:
+            await cls.ensure_loaded()
+        limits = cls._by_module.get(module)
+        if limits is not None:
+            return limits
+        if cls._is_negative(module):
+            return []
+        cls._mark_negative(module)
+        return []
+
+    @classmethod
+    def get_all_limits(cls) -> list[PluginLimitSnapshot]:
+        return list(cls._by_id.values())
+
+    @classmethod
+    async def upsert_from_model(cls, record) -> None:
+        entry = PluginLimitSnapshot.from_model(record)
+        await cls._upsert_entry(entry)
+        RuntimeCacheSync.publish_event("plugin_limit", "upsert", entry.to_payload())
+
+    @classmethod
+    async def upsert_from_payload(cls, payload: dict[str, Any]) -> None:
+        try:
+            entry = PluginLimitSnapshot.from_payload(payload)
+        except Exception:
+            return
+        await cls._upsert_entry(entry)
+
+    @classmethod
+    async def _upsert_entry(cls, entry: PluginLimitSnapshot) -> None:
+        async with cls._lock:
+            prev = cls._by_id.get(entry.id)
+            if prev and prev.module != entry.module:
+                cls._by_module[prev.module] = [
+                    item for item in cls._by_module.get(prev.module, []) if item.id != prev.id
+                ]
+            if not entry.status:
+                cls._by_id.pop(entry.id, None)
+                cls._by_module[entry.module] = [
+                    item for item in cls._by_module.get(entry.module, []) if item.id != entry.id
+                ]
+                return
+            cls._by_id[entry.id] = entry
+            module_limits = [
+                item for item in cls._by_module.get(entry.module, []) if item.id != entry.id
+            ]
+            module_limits.append(entry)
+            cls._by_module[entry.module] = module_limits
+            cls._negative.pop(entry.module, None)
+
+    @classmethod
+    async def remove_by_id(cls, limit_id: int | None) -> None:
+        if not limit_id:
+            return
+        async with cls._lock:
+            entry = cls._by_id.pop(limit_id, None)
+            if entry:
+                cls._by_module[entry.module] = [
+                    item for item in cls._by_module.get(entry.module, []) if item.id != entry.id
+                ]
+        RuntimeCacheSync.publish_event(
+            "plugin_limit", "delete", {"id": int(limit_id)}
+        )
+
+    @classmethod
+    async def apply_sync_event(cls, action: str, data: dict[str, Any]) -> None:
+        if action == "upsert":
+            await cls.upsert_from_payload(data)
+        elif action == "delete":
+            await cls.remove_by_id(data.get("id"))
+        elif action == "refresh":
+            await cls.refresh()
+
+    @classmethod
+    async def _refresh_loop(cls, interval: int) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await cls.refresh()
+            except Exception as exc:
+                logger.error("plugin limit cache refresh failed", LOG_COMMAND, e=exc)
+
+    @classmethod
+    def start_tasks(cls) -> None:
+        interval = _coerce_int(
+            Config.get_config("hook", "LIMIT_MEM_REFRESH_INTERVAL", 60), 60
         )
         if interval <= 0:
             return
@@ -374,19 +1457,45 @@ class BanMemoryCache:
 
 @PriorityLifecycle.on_startup(priority=6)
 async def _init_runtime_cache():
+    await RuntimeCacheSync.start()
     try:
         await PluginInfoMemoryCache.refresh()
     except Exception as exc:
         logger.error("plugin cache init failed", LOG_COMMAND, e=exc)
     try:
+        await BotMemoryCache.refresh()
+    except Exception as exc:
+        logger.error("bot cache init failed", LOG_COMMAND, e=exc)
+    try:
+        await GroupMemoryCache.refresh()
+    except Exception as exc:
+        logger.error("group cache init failed", LOG_COMMAND, e=exc)
+    try:
+        await LevelUserMemoryCache.refresh()
+    except Exception as exc:
+        logger.error("level cache init failed", LOG_COMMAND, e=exc)
+    try:
+        await PluginLimitMemoryCache.refresh()
+    except Exception as exc:
+        logger.error("plugin limit cache init failed", LOG_COMMAND, e=exc)
+    try:
         await BanMemoryCache.refresh()
     except Exception as exc:
         logger.error("ban cache init failed", LOG_COMMAND, e=exc)
     PluginInfoMemoryCache.start_refresh_task()
+    BotMemoryCache.start_tasks()
+    GroupMemoryCache.start_tasks()
+    LevelUserMemoryCache.start_tasks()
+    PluginLimitMemoryCache.start_tasks()
     BanMemoryCache.start_tasks()
 
 
 @PriorityLifecycle.on_shutdown(priority=6)
 async def _stop_runtime_cache():
     PluginInfoMemoryCache.stop_tasks()
+    BotMemoryCache.stop_tasks()
+    GroupMemoryCache.stop_tasks()
+    LevelUserMemoryCache.stop_tasks()
+    PluginLimitMemoryCache.stop_tasks()
     BanMemoryCache.stop_tasks()
+    await RuntimeCacheSync.stop()

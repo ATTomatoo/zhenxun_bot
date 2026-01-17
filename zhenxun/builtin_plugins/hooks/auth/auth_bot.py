@@ -1,10 +1,8 @@
-import asyncio
 import time
 
 from zhenxun.models.bot_console import BotConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.data_access import DataAccess
-from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
+from zhenxun.services.cache.runtime_cache import BotMemoryCache
 from zhenxun.services.log import logger
 from zhenxun.utils.common_utils import CommonUtils
 
@@ -33,17 +31,7 @@ async def auth_bot(
     try:
         bot: BotConsole | None = bot_data
         if bot is None and not skip_fetch:
-            # 从数据库或缓存中获取 bot 信息
-            bot_dao = DataAccess(BotConsole)
-
-            try:
-                bot = await asyncio.wait_for(
-                    bot_dao.safe_get_or_none(bot_id=bot_id), timeout=DB_TIMEOUT_SECONDS
-                )
-            except asyncio.TimeoutError:
-                logger.error(f"查询Bot信息超时: bot_id={bot_id}", LOGGER_COMMAND)
-                # 超时时不阻塞，继续执行
-                return
+            bot = await BotMemoryCache.get(bot_id)
 
         if not bot or not bot.status:
             raise SkipPluginException("Bot不存在或休眠中阻断权限检测...")

@@ -1,4 +1,3 @@
-import asyncio
 import time
 
 from nonebot_plugin_alconna import At
@@ -6,8 +5,7 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.data_access import DataAccess
-from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
+from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.services.log import logger
 from zhenxun.utils.utils import get_entity_ids
 
@@ -41,36 +39,9 @@ async def auth_admin(
         if cached_levels is not None:
             global_user, group_users = cached_levels
         else:
-            level_dao = DataAccess(LevelUser)
-
-            # 并行查询用户权限数据
-            global_user_task = level_dao.safe_get_or_none(
-                user_id=session.user.id, group_id__isnull=True
+            global_user, group_users = await LevelUserMemoryCache.get_levels(
+                session.user.id, entity.group_id
             )
-
-            # 如果在群组中，查询群组权限
-            group_users_task = None
-            if entity.group_id:
-                group_users_task = level_dao.safe_get_or_none(
-                    user_id=session.user.id, group_id=entity.group_id
-                )
-
-            # 等待查询完成，添加超时控制
-            try:
-                results = await asyncio.wait_for(
-                    asyncio.gather(
-                        global_user_task, group_users_task or asyncio.sleep(0)
-                    ),
-                    timeout=DB_TIMEOUT_SECONDS,
-                )
-                global_user = results[0]
-                group_users = results[1] if group_users_task else None
-            except asyncio.TimeoutError:
-                logger.error(
-                    f"查询用户权限超时: user_id={session.user.id}", LOGGER_COMMAND
-                )
-                # 超时时不阻塞，继续执行
-                return
 
         user_level = global_user.user_level if global_user else 0
         if entity.group_id and group_users:
@@ -84,6 +55,7 @@ async def auth_admin(
                         f"你的权限不足喔，该功能需要的权限等级: {plugin.admin_level}",
                     ],
                     entity.user_id,
+                    background=True,
                 )
 
                 raise SkipPluginException(
@@ -94,6 +66,7 @@ async def auth_admin(
                 await send_message(
                     session,
                     f"你的权限不足喔，该功能需要的权限等级: {plugin.admin_level}",
+                    background=True,
                 )
 
                 raise SkipPluginException(

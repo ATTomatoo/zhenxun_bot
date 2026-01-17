@@ -6,6 +6,7 @@ from tortoise.backends.base.client import BaseDBAsyncClient
 
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
+from zhenxun.services.cache.runtime_cache import GroupMemoryCache
 from zhenxun.services.cache import CacheRoot
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.db_context import Model
@@ -155,6 +156,7 @@ class GroupConsole(Model):
 
         # 更新缓存
         await cls._update_cache(group)
+        await GroupMemoryCache.upsert_from_model(group)
 
         return group
 
@@ -210,6 +212,7 @@ class GroupConsole(Model):
         # 更新缓存
         if is_create:
             await cls._update_cache(group)
+            await GroupMemoryCache.upsert_from_model(group)
 
         return group, is_create
 
@@ -235,8 +238,19 @@ class GroupConsole(Model):
 
         # 更新缓存
         await cls._update_cache(group)
+        await GroupMemoryCache.upsert_from_model(group)
 
         return group, is_create
+
+    async def save(self, *args, **kwargs):
+        await super().save(*args, **kwargs)
+        await GroupMemoryCache.upsert_from_model(self)
+
+    async def delete(self, *args, **kwargs):
+        group_id = self.group_id
+        channel_id = self.channel_id
+        await super().delete(*args, **kwargs)
+        await GroupMemoryCache.remove(group_id, channel_id)
 
     @classmethod
     async def get_group(

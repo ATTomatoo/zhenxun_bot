@@ -85,17 +85,17 @@ class BanConsole(Model):
     async def check_ban_level(
         cls, user_id: str | None, group_id: str | None, level: int
     ) -> bool:
-        """??ban???????unban?????????
+        """检测ban掉目标的用户与unban用户的权限等级大小
 
-        ??:
-            user_id: ??id
-            group_id: ??id
-            level: ????
+        参数:
+            user_id: 用户id
+            group_id: 群组id
+            level: 权限等级
 
-        ??:
-            bool: ???????unban
+        返回:
+            bool: 权限判断，能否unban
         """
-        logger.debug("?????ban??", target=f"{group_id}:{user_id}")
+        logger.debug("检测用户被ban等级", target=f"{group_id}:{user_id}")
         await BanMemoryCache.ensure_loaded()
         return BanMemoryCache.check_ban_level(user_id, group_id, level)
 
@@ -103,29 +103,29 @@ class BanConsole(Model):
     async def check_ban_time(
         cls, user_id: str | None, group_id: str | None = None
     ) -> int:
-        """?????ban??
+        """检测用户被ban时长
 
-        ??:
-            user_id: ??id
+        参数:
+            user_id: 用户id
 
-        ??:
-            int: ban?????-1????ban?0????ban
+        返回:
+            int: ban剩余时长，-1时为永久ban，0表示未被ban
         """
-        logger.debug("????ban??", target=f"{group_id}:{user_id}")
+        logger.debug("获取用户ban时长", target=f"{group_id}:{user_id}")
         await BanMemoryCache.ensure_loaded()
         return BanMemoryCache.remaining_time(user_id, group_id)
 
     @classmethod
     async def is_ban(cls, user_id: str | None, group_id: str | None = None) -> bool:
-        """???????ban
+        """判断用户是否被ban
 
-        ??:
-            user_id: ??id
+        参数:
+            user_id: 用户id
 
-        ??:
-            bool: ???ban
+        返回:
+            bool: 是否被ban
         """
-        logger.debug("?????ban", target=f"{group_id}:{user_id}")
+        logger.debug("检测是否被ban", target=f"{group_id}:{user_id}")
         return (await cls.check_ban_time(user_id, group_id)) != 0
 
     @classmethod
@@ -138,17 +138,17 @@ class BanConsole(Model):
         duration: int,
         operator: str | None = None,
     ):
-        """ban?????
+        """ban掉目标用户
 
-        ??:
-            user_id: ??id
-            group_id: ??id
-            ban_level: ??????????
-            duration: ??????-1????
-            operator: ???id
+        参数:
+            user_id: 用户id
+            group_id: 群组id
+            ban_level: 使用命令者的权限等级
+            duration: 时长，分钟，-1时为永久
+            operator: 操作者id
         """
         logger.debug(
-            f"????/?????:{ban_level}???: {duration}",
+            f"封禁用户/群组，等级:{ban_level}，时长: {duration}",
             target=f"{group_id}:{user_id}",
         )
         target = await cls._get_data(user_id, group_id)
@@ -166,18 +166,18 @@ class BanConsole(Model):
 
     @classmethod
     async def unban(cls, user_id: str | None, group_id: str | None = None) -> bool:
-        """unban??
+        """unban用户
 
-        ??:
-            user_id: ??id
-            group_id: ??id
+        参数:
+            user_id: 用户id
+            group_id: 群组id
 
-        ??:
-            bool: ???ban
+        返回:
+            bool: 是否被ban
         """
         user = await cls._get_data(user_id, group_id)
         if user:
-            logger.debug("????", target=f"{group_id}:{user_id}")
+            logger.debug("解除封禁", target=f"{group_id}:{user_id}")
             await user.delete()
             return True
         return False
