@@ -10,7 +10,7 @@ from zhenxun.configs.config import Config
 from zhenxun.models.ban_console import BanConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.services.cache.cache_containers import CacheDict
-from zhenxun.services.data_access import DataAccess
+from zhenxun.services.cache.runtime_cache import BanMemoryCache
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import PluginType
@@ -120,95 +120,19 @@ async def calculate_ban_time(ban_record: BanConsole | None) -> int:
 
 
 async def is_ban(user_id: str | None, group_id: str | None) -> int:
-    """检查用户或群组是否被ban
+    """??????????ban
 
-    参数:
-        user_id: 用户ID
-        group_id: 群组ID
+    ??:
+        user_id: ??ID
+        group_id: ??ID
 
-    返回:
-        int: ban的剩余时间，0表示未被ban
+    ??:
+        int: ban??????0????ban
     """
     if not user_id and not group_id:
         return 0
-
-    cache_key = _ban_cache_key(user_id, group_id)
-    cached = _ban_cache_get(cache_key)
-    if cached is not None:
-        return cached
-
-    start_time = time.time()
-    ban_dao = DataAccess(BanConsole)
-
-    # 分别获取用户在群组中的ban记录和全局ban记录
-    group_user = None
-    user = None
-
-    try:
-        # 并行查询用户和群组的 ban 记录
-        tasks = []
-        if user_id and group_id:
-            tasks.append(ban_dao.safe_get_or_none(user_id=user_id, group_id=group_id))
-        if user_id:
-            tasks.append(
-                ban_dao.safe_get_or_none(user_id=user_id, group_id__isnull=True)
-            )
-
-        # 等待所有查询完成，添加超时控制
-        if tasks:
-            try:
-                ban_records = await asyncio.wait_for(
-                    asyncio.gather(*tasks), timeout=DB_TIMEOUT_SECONDS
-                )
-                if len(tasks) == 2:
-                    group_user, user = ban_records
-                elif user_id and group_id:
-                    group_user = ban_records[0]
-                else:
-                    user = ban_records[0]
-            except asyncio.TimeoutError:
-                logger.error(
-                    f"查询ban记录超时: user_id={user_id}, group_id={group_id}",
-                    LOGGER_COMMAND,
-                )
-                _ban_cache_set(cache_key, 0)
-                return 0
-
-        # 检查记录并计算ban时间
-        results = []
-        if group_user:
-            results.append(group_user)
-        if user:
-            results.append(user)
-
-        # 如果没有找到记录，返回0
-        if not results:
-            _ban_cache_set(cache_key, 0)
-            return 0
-
-        logger.debug(f"查询到的ban记录: {results}", LOGGER_COMMAND)
-        # 检查所有记录，找出最严格的ban（时间最长的）
-        max_ban_time: int = 0
-        for result in results:
-            if result.duration > 0 or result.duration == -1:
-                # 直接计算ban时间，避免再次查询数据库
-                ban_time = await calculate_ban_time(result)
-                if ban_time == -1 or ban_time > max_ban_time:
-                    max_ban_time = ban_time
-
-        _ban_cache_set(cache_key, max_ban_time)
-        return max_ban_time
-    finally:
-        # 记录执行时间
-        elapsed = time.time() - start_time
-        if elapsed > WARNING_THRESHOLD:  # 记录耗时超过500ms的检查
-            logger.warning(
-                f"is_ban 耗时: {elapsed:.3f}s",
-                LOGGER_COMMAND,
-                session=user_id,
-                group_id=group_id,
-            )
-
+    await BanMemoryCache.ensure_loaded()
+    return BanMemoryCache.remaining_time(user_id, group_id)
 
 def check_plugin_type(matcher: Matcher) -> bool:
     """判断插件类型是否是隐藏插件

@@ -14,6 +14,7 @@ from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
+from zhenxun.services.cache.runtime_cache import PluginInfoMemoryCache
 from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
@@ -361,12 +362,8 @@ async def get_plugin_and_user(
 ) -> tuple[PluginInfo, UserConsole | None]:
     """Fetch plugin info and read user only when cost is required."""
     user_dao = DataAccess(UserConsole)
-    plugin_dao = DataAccess(PluginInfo)
 
-    plugin = _cache_get(PLUGIN_CACHE, module)
-    if not plugin:
-        async with _db_section():
-            plugin = await _fetch_plugin(plugin_dao, module)
+    plugin = await PluginInfoMemoryCache.get_by_module(module)
 
     if not plugin:
         raise PermissionExemption(
@@ -382,7 +379,6 @@ async def get_plugin_and_user(
         async with _db_section():
             user = await _fetch_user_readonly(user_dao, user_id)
 
-    _cache_set(PLUGIN_CACHE, module, plugin)
     return plugin, user
 
 

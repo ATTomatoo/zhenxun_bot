@@ -115,6 +115,8 @@ __all__ = [
     "CacheRoot",
 ]
 
+from . import runtime_cache as _runtime_cache  # noqa: F401
+
 T = TypeVar("T")
 U = TypeVar("U")
 
