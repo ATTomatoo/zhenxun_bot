@@ -60,7 +60,13 @@ async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: 
             logger.error("async auth failed", LOGGER_COMMAND, e=exc)
 
     asyncio.create_task(_run_auth_async())
-    logger.debug(f"权限检测耗时：{time.time() - start_time}秒", LOGGER_COMMAND)
+    now = time.monotonic()
+    last_log = getattr(_, "_last_log", 0.0)
+    if now - last_log > 1.0:
+        setattr(_, "_last_log", now)
+        logger.debug(
+            f"权限检测耗时：{time.time() - start_time}秒", LOGGER_COMMAND
+        )
 
 
 # 解除命令block阻塞
