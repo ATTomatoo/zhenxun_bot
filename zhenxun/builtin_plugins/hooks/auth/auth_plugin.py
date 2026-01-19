@@ -6,6 +6,7 @@ from nonebot_plugin_uninfo import Uninfo
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.services.log import logger
+from zhenxun.services.cache.runtime_cache import _parse_block_modules
 from zhenxun.utils.enum import BlockType
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD
@@ -13,78 +14,77 @@ from .exception import IsSuperuserException, SkipPluginException
 from .utils import freq, is_poke, send_message
 
 
-def _parse_block_set(value: str | None) -> frozenset[str]:
-    if not value:
-        return frozenset()
-    items = []
-    for part in value.split("<"):
-        part = part.strip()
-        if not part:
-            continue
-        part = part.strip(",").strip()
-        if part:
-            items.append(part)
-    return frozenset(items)
-
-
-def _get_group_block_set(group, value_attr: str, set_attr: str) -> frozenset[str]:
-    cached = getattr(group, set_attr, None)
-    if cached is not None:
-        return cached
-    return _parse_block_set(getattr(group, value_attr, "") or "")
+def _get_group_block_sets(group: GroupConsole) -> tuple[frozenset[str], frozenset[str]]:
+    block_set = getattr(group, "block_plugin_set", None)
+    super_block_set = getattr(group, "superuser_block_plugin_set", None)
+    if block_set is None:
+        block_set = _parse_block_modules(getattr(group, "block_plugin", "") or "")
+        setattr(group, "block_plugin_set", block_set)
+    if super_block_set is None:
+        super_block_set = _parse_block_modules(
+            getattr(group, "superuser_block_plugin", "") or ""
+        )
+        setattr(group, "superuser_block_plugin_set", super_block_set)
+    return block_set, super_block_set
 
 
 class GroupCheck:
     def __init__(
-        self, plugin: PluginInfo, group: GroupConsole, session: Uninfo, is_poke: bool
+        self,
+        plugin: PluginInfo,
+        group: GroupConsole,
+        session: Uninfo,
+        is_poke: bool,
+        skip_group_block: bool,
     ) -> None:
         self.session = session
         self.is_poke = is_poke
         self.plugin = plugin
         self.group_data = group
         self.group_id = group.group_id
-        self.block_plugin_set = _get_group_block_set(
-            group, "block_plugin", "block_plugin_set"
-        )
-        self.superuser_block_plugin_set = _get_group_block_set(
-            group, "superuser_block_plugin", "superuser_block_plugin_set"
-        )
+        self.skip_group_block = skip_group_block
+        (
+            self.block_plugin_set,
+            self.superuser_block_plugin_set,
+        ) = _get_group_block_sets(group)
 
     async def check(self):
         start_time = time.time()
         try:
-            # 检查超级用户禁用
-            if (
-                self.group_data
-                and self.plugin.module in self.superuser_block_plugin_set
-            ):
-                if freq.is_send_limit_message(self.plugin, self.group_id, self.is_poke):
-                    await send_message(
-                        self.session,
-                        "超级管理员禁用了该群此功能...",
-                        self.group_id,
-                        background=True,
+            if not self.skip_group_block:
+                # 检查超级用户禁用
+                if (
+                    self.group_data
+                    and self.plugin.module in self.superuser_block_plugin_set
+                ):
+                    if freq.is_send_limit_message(
+                        self.plugin, self.group_id, self.is_poke
+                    ):
+                        await send_message(
+                            self.session,
+                            "超级管理员禁用了该群此功能...",
+                            self.group_id,
+                            background=True,
+                        )
+                    raise SkipPluginException(
+                        f"{self.plugin.name}({self.plugin.module})"
+                        f" 超级管理员禁用了该群此功能..."
                     )
-                raise SkipPluginException(
-                    f"{self.plugin.name}({self.plugin.module})"
-                    f" 超级管理员禁用了该群此功能..."
-                )
 
-            # 检查普通禁用
-            if (
-                self.group_data
-                and self.plugin.module in self.block_plugin_set
-            ):
-                if freq.is_send_limit_message(self.plugin, self.group_id, self.is_poke):
-                    await send_message(
-                        self.session,
-                        "该群未开启此功能...",
-                        self.group_id,
-                        background=True,
+                # 检查普通禁用
+                if self.group_data and self.plugin.module in self.block_plugin_set:
+                    if freq.is_send_limit_message(
+                        self.plugin, self.group_id, self.is_poke
+                    ):
+                        await send_message(
+                            self.session,
+                            "该群未开启此功能...",
+                            self.group_id,
+                            background=True,
+                        )
+                    raise SkipPluginException(
+                        f"{self.plugin.name}({self.plugin.module}) 未开启此功能..."
                     )
-                raise SkipPluginException(
-                    f"{self.plugin.name}({self.plugin.module}) 未开启此功能..."
-                )
 
             # 检查全局禁用
             if self.plugin.block_type == BlockType.GROUP:
@@ -175,7 +175,12 @@ class PluginCheck:
 
 
 async def auth_plugin(
-    plugin: PluginInfo, group: GroupConsole | None, session: Uninfo, event: Event
+    plugin: PluginInfo,
+    group: GroupConsole | None,
+    session: Uninfo,
+    event: Event,
+    *,
+    skip_group_block: bool = False,
 ):
     """插件状态
 
@@ -190,7 +195,17 @@ async def auth_plugin(
         user_check = PluginCheck(group, session, is_poke_event)
 
         if group:
-            await GroupCheck(plugin, group, session, is_poke_event).check()
+            block_set, super_block_set = _get_group_block_sets(group)
+            if (
+                plugin.status
+                and plugin.block_type != BlockType.GROUP
+                and not block_set
+                and not super_block_set
+            ):
+                return
+            await GroupCheck(
+                plugin, group, session, is_poke_event, skip_group_block
+            ).check()
         else:
             await user_check.check_user(plugin)
         await user_check.check_global(plugin)

@@ -1,7 +1,5 @@
 import time
 
-from nonebot_plugin_alconna import UniMsg
-
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.services.log import logger
@@ -13,7 +11,7 @@ from .exception import SkipPluginException
 async def auth_group(
     plugin: PluginInfo,
     group: GroupConsole | None,
-    message: UniMsg,
+    text: str | None,
     group_id: str | None,
 ):
     """群黑名单检测 群总开关检测
@@ -29,7 +27,7 @@ async def auth_group(
     start_time = time.time()
 
     try:
-        text = message.extract_plain_text()
+        text = text or ""
 
         if not group:
             raise SkipPluginException("群组信息不存在...")

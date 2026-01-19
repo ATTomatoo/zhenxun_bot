@@ -919,6 +919,7 @@ class LevelUserMemoryCache:
     _negative: ClassVar[dict[tuple[str, str], float]] = {}
     _loaded: ClassVar[bool] = False
     _refresh_task: ClassVar[asyncio.Task | None] = None
+    _last_refresh: ClassVar[float] = 0.0
 
     @classmethod
     def _normalize(cls, value: str | None) -> str | None:
@@ -975,6 +976,7 @@ class LevelUserMemoryCache:
             cls._by_key = by_key
             cls._negative = {}
             cls._loaded = True
+            cls._last_refresh = time.time()
             logger.debug(f"level cache refreshed: {len(by_key)} entries", LOG_COMMAND)
 
     @classmethod
@@ -982,6 +984,19 @@ class LevelUserMemoryCache:
         if cls._loaded:
             return
         await cls.refresh()
+
+    @classmethod
+    async def ensure_fresh(cls) -> None:
+        interval = _coerce_int(
+            Config.get_config("hook", "LEVEL_MEM_REFRESH_INTERVAL", 120), 120
+        )
+        if not cls._loaded:
+            await cls.refresh()
+            return
+        if interval <= 0:
+            return
+        if time.time() - cls._last_refresh > interval:
+            await cls.refresh()
 
     @classmethod
     async def get(
