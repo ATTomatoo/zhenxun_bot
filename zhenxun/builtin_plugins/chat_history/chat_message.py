@@ -1,4 +1,7 @@
-from nonebot import on_message
+import time
+
+from nonebot import get_driver, on_message
+from nonebot.adapters import Event
 from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_apscheduler import scheduler
@@ -33,8 +36,41 @@ __plugin_meta__ = PluginMetadata(
 )
 
 
-def rule(message: UniMsg) -> bool:
-    return bool(Config.get_config("chat_history", "FLAG") and message)
+_COMMAND_STARTS = {str(item) for item in (get_driver().config.command_start or [])}
+_LAST_GROUP_SAVE: dict[str, float] = {}
+_LAST_USER_SAVE: dict[str, float] = {}
+_GROUP_MIN_INTERVAL = 0.5
+_USER_MIN_INTERVAL = 0.2
+
+
+def _is_command_like(text: str) -> bool:
+    if not text:
+        return False
+    for start in _COMMAND_STARTS:
+        if text.startswith(start):
+            return True
+    return False
+
+
+def rule(event: Event, message: UniMsg, session: Uninfo) -> bool:
+    if not Config.get_config("chat_history", "FLAG"):
+        return False
+    if not message:
+        return False
+    text = message.extract_plain_text().strip()
+    if _is_command_like(text):
+        return False
+    entity = get_entity_ids(session)
+    now = time.time()
+    if entity.group_id:
+        last_group = _LAST_GROUP_SAVE.get(entity.group_id, 0)
+        if now - last_group < _GROUP_MIN_INTERVAL:
+            return False
+    if entity.user_id:
+        last_user = _LAST_USER_SAVE.get(entity.user_id, 0)
+        if now - last_user < _USER_MIN_INTERVAL:
+            return False
+    return True
 
 
 chat_history = on_message(rule=rule, priority=1, block=False)
@@ -45,6 +81,11 @@ TEMP_LIST = []
 @chat_history.handle()
 async def _(message: UniMsg, session: Uninfo):
     entity = get_entity_ids(session)
+    now = time.time()
+    if entity.group_id:
+        _LAST_GROUP_SAVE[entity.group_id] = now
+    if entity.user_id:
+        _LAST_USER_SAVE[entity.user_id] = now
     TEMP_LIST.append(
         ChatHistory(
             user_id=entity.user_id,
