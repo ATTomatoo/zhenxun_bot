@@ -37,9 +37,7 @@ DEFAULT_IMAGE_PATH = IMAGE_PATH / "qxz"
 _API_SEMAPHORE = asyncio.Semaphore(4)
 
 
-async def _safe_get_group_member_info(
-    bot: Bot, group_id: str, user_id: str
-) -> dict:
+async def _safe_get_group_member_info(bot: Bot, group_id: str, user_id: str) -> dict:
     async with _API_SEMAPHORE:
         try:
             return await bot.get_group_member_info(
@@ -380,9 +378,7 @@ class GroupManager:
                 )
                 if operator_user:
                     operator_name = (
-                        operator_user.nickname
-                        or operator_user.user_name
-                        or operator_id
+                        operator_user.nickname or operator_user.user_name or operator_id
                     )
                 else:
                     operator_name = operator_id

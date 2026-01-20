@@ -10,7 +10,6 @@ from .config import LOGGER_COMMAND, WARNING_THRESHOLD
 from .exception import SkipPluginException
 from .utils import send_message
 
-
 DEFAULT_GOLD = 100
 
 

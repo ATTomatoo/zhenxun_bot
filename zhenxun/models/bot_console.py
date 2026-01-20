@@ -2,8 +2,8 @@ from typing import Literal, overload
 
 from tortoise import fields
 
-from zhenxun.services.db_context import Model
 from zhenxun.services.cache.runtime_cache import BotMemoryCache
+from zhenxun.services.db_context import Model
 from zhenxun.utils.enum import CacheType
 
 

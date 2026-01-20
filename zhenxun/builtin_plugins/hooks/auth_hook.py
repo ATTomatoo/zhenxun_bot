@@ -2,25 +2,24 @@ import asyncio
 import time
 
 from nonebot.adapters import Bot, Event
-from nonebot.matcher import Matcher
 from nonebot.exception import IgnoredException
+from nonebot.matcher import Matcher
 from nonebot.message import run_postprocessor, run_preprocessor
 from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_uninfo import Uninfo
 
-from zhenxun.services.log import logger
 from zhenxun.services.cache.runtime_cache import is_cache_ready
+from zhenxun.services.log import logger
+from zhenxun.utils.utils import get_entity_ids
 
 from .auth.config import LOGGER_COMMAND
 from .auth.exception import SkipPluginException
-from zhenxun.utils.utils import get_entity_ids
-
 from .auth_checker import (
     LimitManager,
+    _get_event_cache,
     auth,
     auth_ban_fast,
     auth_precheck,
-    _get_event_cache,
 )
 
 
@@ -67,9 +66,7 @@ async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: 
     last_log = getattr(_, "_last_log", 0.0)
     if now - last_log > 1.0:
         setattr(_, "_last_log", now)
-        logger.debug(
-            f"权限检测耗时：{time.time() - start_time}秒", LOGGER_COMMAND
-        )
+        logger.debug(f"权限检测耗时：{time.time() - start_time}秒", LOGGER_COMMAND)
 
 
 # 解除命令block阻塞

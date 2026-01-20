@@ -5,8 +5,8 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.log import logger
 from zhenxun.services.cache.runtime_cache import _parse_block_modules
+from zhenxun.services.log import logger
 from zhenxun.utils.enum import BlockType
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD

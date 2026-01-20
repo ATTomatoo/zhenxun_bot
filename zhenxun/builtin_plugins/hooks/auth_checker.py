@@ -11,18 +11,15 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.configs.config import Config
 from zhenxun.configs.utils import PluginExtraData
-from zhenxun.models.bot_console import BotConsole
-from zhenxun.models.group_console import GroupConsole
-from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
+from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.cache.runtime_cache import (
     BotMemoryCache,
     GroupMemoryCache,
     LevelUserMemoryCache,
     PluginInfoMemoryCache,
 )
-from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import BlockType, GoldHandle, PluginType
@@ -93,6 +90,7 @@ def _coerce_cache_ttl(value, default):
         return default
     return value_int if value_int >= 0 else default
 
+
 # 超时设置（秒）
 TIMEOUT_SECONDS = 5.0
 # 熔断计数器
@@ -118,9 +116,7 @@ DB_CONCURRENCY_LIMIT = _coerce_positive_int(
     HOOKS_CONCURRENCY_LIMIT,
 )
 
-PLUGIN_CACHE_TTL = _coerce_cache_ttl(
-    base_config.get("AUTH_PLUGIN_CACHE_TTL", 30), 30
-)
+PLUGIN_CACHE_TTL = _coerce_cache_ttl(base_config.get("AUTH_PLUGIN_CACHE_TTL", 30), 30)
 USER_CACHE_TTL = _coerce_cache_ttl(base_config.get("AUTH_USER_CACHE_TTL", 5), 5)
 
 PLUGIN_CACHE = (
@@ -131,9 +127,7 @@ PLUGIN_CACHE = (
 USER_CACHE = (
     CacheDict("AUTH_USER_CACHE", expire=USER_CACHE_TTL) if USER_CACHE_TTL > 0 else None
 )
-EVENT_CACHE_TTL = _coerce_cache_ttl(
-    base_config.get("AUTH_EVENT_CACHE_TTL", 2), 2
-)
+EVENT_CACHE_TTL = _coerce_cache_ttl(base_config.get("AUTH_EVENT_CACHE_TTL", 2), 2)
 EVENT_CACHE = (
     CacheDict("AUTH_EVENT_CACHE", expire=EVENT_CACHE_TTL)
     if EVENT_CACHE_TTL > 0
@@ -301,15 +295,14 @@ async def _has_limits_cached(module: str, event_cache: dict | None) -> bool:
         module_limit_cache[module] = has_limits
     return has_limits
 
+
 @contextlib.asynccontextmanager
 async def _db_section():
     global DB_ACTIVE_COUNT
     await DB_SEMAPHORE.acquire()
     async with DB_ACTIVE_LOCK:
         DB_ACTIVE_COUNT += 1
-        logger.debug(
-            f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND
-        )
+        logger.debug(f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND)
     try:
         yield
     finally:
@@ -476,9 +469,7 @@ async def _fetch_user_readonly(
     )
 
 
-async def _fetch_plugin(
-    plugin_dao: DataAccess, module: str
-) -> PluginInfo | None:
+async def _fetch_plugin(plugin_dao: DataAccess, module: str) -> PluginInfo | None:
     return await with_timeout(
         plugin_dao.safe_get_or_none(module=module), name="get_plugin"
     )
@@ -505,13 +496,9 @@ async def get_plugin_and_user(
             event_cache.setdefault("plugin_cache", {})[module] = plugin
 
     if not plugin:
-        raise PermissionExemption(
-            f"plugin:{module} not found, skip permission check"
-        )
+        raise PermissionExemption(f"plugin:{module} not found, skip permission check")
     if plugin.plugin_type == PluginType.HIDDEN:
-        raise PermissionExemption(
-            f"plugin {plugin.name}:{plugin.module} hidden, skip"
-        )
+        raise PermissionExemption(f"plugin {plugin.name}:{plugin.module} hidden, skip")
 
     user = None
     if need_user and plugin.cost_gold > 0:
@@ -696,9 +683,7 @@ async def auth_precheck(
 
     if _needs_admin_check(plugin):
         await LevelUserMemoryCache.ensure_fresh()
-        levels = await LevelUserMemoryCache.get_levels(
-            session.user.id, entity.group_id
-        )
+        levels = await LevelUserMemoryCache.get_levels(session.user.id, entity.group_id)
         await auth_admin(plugin, session, cached_levels=levels)
 
 
@@ -759,8 +744,7 @@ async def auth(
         route_modules = await _get_route_context(text, event_cache)
         await _ensure_route_index()
         route_skip_checks = (
-            module in _ROUTE_MODULES_WITH_COMMANDS
-            and module not in route_modules
+            module in _ROUTE_MODULES_WITH_COMMANDS and module not in route_modules
         )
         if route_skip_checks:
             if event_cache is not None:
@@ -815,9 +799,7 @@ async def auth(
                 else:
                     admin_start = time.time()
                     await auth_admin(plugin, session, cached_levels=admin_levels)
-                    hook_times["auth_admin"] = (
-                        f"{time.time() - admin_start:.3f}s(pre)"
-                    )
+                    hook_times["auth_admin"] = f"{time.time() - admin_start:.3f}s(pre)"
                 admin_checked_pre = True
 
         ban_cache_state = None
@@ -884,9 +866,7 @@ async def auth(
         bot_data = None
         bot_timeout = False
         if event_cache is not None:
-            bot_data, bot_timeout = await _get_bot_data_cached(
-                bot.self_id, event_cache
-            )
+            bot_data, bot_timeout = await _get_bot_data_cached(bot.self_id, event_cache)
 
         admin_levels = None
         admin_timeout = False
