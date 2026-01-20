@@ -9,6 +9,7 @@ from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.services.log import logger
+from zhenxun.services.cache.runtime_cache import is_cache_ready
 
 from .auth.config import LOGGER_COMMAND
 from .auth.exception import SkipPluginException
@@ -26,6 +27,8 @@ from .auth_checker import (
 # # 权限检测
 @run_preprocessor
 async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: UniMsg):
+    if event.get_type() == "message" and not is_cache_ready():
+        raise IgnoredException("cache not ready ignore")
     start_time = time.time()
     entity = get_entity_ids(session)
     event_cache = _get_event_cache(event, session, entity)

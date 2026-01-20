@@ -111,6 +111,7 @@ def _coerce_int(value, default: int) -> int:
 
 
 INSTANCE_ID = uuid.uuid4().hex
+_CACHE_READY_EVENT = asyncio.Event()
 
 
 def _env_get(name: str, default: str | None = None) -> str | None:
@@ -125,6 +126,18 @@ def _redis_enabled() -> bool:
     if mode != CacheMode.REDIS:
         return False
     return bool(_env_get("REDIS_HOST"))
+
+
+def is_cache_ready() -> bool:
+    return _CACHE_READY_EVENT.is_set()
+
+
+async def wait_cache_ready(timeout: float | None = None) -> bool:
+    try:
+        await asyncio.wait_for(_CACHE_READY_EVENT.wait(), timeout=timeout)
+        return True
+    except asyncio.TimeoutError:
+        return False
 
 
 def _parse_block_modules(value: str) -> frozenset[str]:
@@ -1527,6 +1540,7 @@ async def _init_runtime_cache():
     LevelUserMemoryCache.start_tasks()
     PluginLimitMemoryCache.start_tasks()
     BanMemoryCache.start_tasks()
+    _CACHE_READY_EVENT.set()
 
 
 @PriorityLifecycle.on_shutdown(priority=6)
