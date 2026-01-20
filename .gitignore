@@ -115,10 +115,6 @@ ENV/
 env.bak/
 venv.bak/
 .env.dev
-Python310/
-muenv/
-zhenxun/plugins/
-zhenxun/extensive_plugins/
 
 # Spyder project settings
 .spyderproject
