@@ -59,16 +59,24 @@ def init_mocker(mocker: MockerFixture, tmp_path: Path):
         percent=100.0,  # 100% of disk space used
     )
 
+    mocker.patch(
+        "zhenxun.builtin_plugins.hooks.auth_hook.is_cache_ready", return_value=True
+    )
+
     mock_cpuinfo = mocker.patch("zhenxun.builtin_plugins.check.data_source.cpuinfo")
     mock_cpuinfo.get_cpu_info.return_value = cpuinfo_get_cpu_info
+
+    mock_get_config = mocker.patch(
+        "zhenxun.configs.config.Config.get_config", return_value="mix"
+    )
 
     mock_platform = mocker.patch("zhenxun.builtin_plugins.check.data_source.platform")
     mock_platform.uname.return_value = platform_uname
 
     mock_render_service = mocker.patch(
-        "zhenxun.builtin_plugins.check.renderer_service.render"
+        "zhenxun.ui.render_template", new_callable=mocker.AsyncMock
     )
-    mock_render_service_return = mocker.AsyncMock()
+    mock_render_service_return = b"image"
     mock_render_service.return_value = mock_render_service_return
 
     mock_build_message = mocker.patch(
@@ -85,10 +93,11 @@ def init_mocker(mocker: MockerFixture, tmp_path: Path):
         mock_render_service_return,
         mock_build_message,
         mock_build_message_return,
+        mock_get_config,
     )
 
 
-@pytest.mark.xfail
+# @pytest.mark.xfail
 async def test_check(
     app: App,
     mocker: MockerFixture,
@@ -108,6 +117,7 @@ async def test_check(
         mock_render_service_return,
         mock_build_message,
         mock_build_message_return,
+        mock_get_config,
     ) = init_mocker(mocker, tmp_path)
     async with app.test_matcher(_self_check_matcher) as ctx:
         bot = create_bot(ctx)
@@ -122,9 +132,11 @@ async def test_check(
             to_me=True,
         )
         ctx.receive_event(bot=bot, event=event)
-        ctx.should_ignore_rule(_self_check_matcher)
+        ctx.should_pass_rule(_self_check_matcher)
+        ctx.should_pass_permission(_self_check_matcher)
 
     mock_render_service.assert_awaited_once()
+
     mock_build_message.assert_called_once_with(mock_render_service_return)
     mock_build_message_return.send.assert_awaited_once()
 
@@ -164,6 +176,7 @@ async def test_check_arm(
         mock_render_service_return,
         mock_build_message,
         mock_build_message_return,
+        _,
     ) = init_mocker(mocker, tmp_path)
 
     mock_platform.uname.return_value = platform_uname_arm
