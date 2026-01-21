@@ -291,19 +291,18 @@ class GroupManager:
         user_name = getattr(session.user, "name", None) or getattr(
             session.user, "nick", None
         )
+        platform = PlatformUtils.get_platform(session)
         await GroupInfoUser.update_or_create(
             user_id=str(user_id),
             group_id=str(group_id),
             defaults={
                 "user_name": user_name or "",
                 "user_join_time": join_time,
-                "platform": session.platform,
+                "platform": platform,
             },
         )
-        asyncio.create_task(
-            _refresh_member_info_async(
-                bot, str(group_id), str(user_id), session.platform
-            )
+        asyncio.create_task(  # noqa: RUF006
+            _refresh_member_info_async(bot, str(group_id), str(user_id), platform)
         )
         logger.info(f"用户{user_id} 所属{group_id} 更新成功")
         if not await CommonUtils.task_is_block(
@@ -376,12 +375,11 @@ class GroupManager:
                 operator_user = await GroupInfoUser.get_or_none(
                     user_id=operator_id, group_id=group_id
                 )
-                if operator_user:
-                    operator_name = (
-                        operator_user.nickname or operator_user.user_name or operator_id
-                    )
-                else:
-                    operator_name = operator_id
+                operator_name = (
+                    (operator_user.nickname or operator_user.user_name or operator_id)
+                    if operator_user
+                    else operator_id
+                )
             else:
                 operator_name = ""
             return f"{user_name} 被 {operator_name} 送走了."

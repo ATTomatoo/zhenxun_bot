@@ -61,7 +61,7 @@ async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: 
         except Exception as exc:
             logger.error("async auth failed", LOGGER_COMMAND, e=exc)
 
-    asyncio.create_task(_run_auth_async())
+    asyncio.create_task(_run_auth_async())  # noqa: RUF006
     now = time.monotonic()
     last_log = getattr(_, "_last_log", 0.0)
     if now - last_log > 1.0:
