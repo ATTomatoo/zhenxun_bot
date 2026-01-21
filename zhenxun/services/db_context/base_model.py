@@ -9,7 +9,6 @@ from tortoise.exceptions import IntegrityError, MultipleObjectsReturned
 from tortoise.models import Model as TortoiseModel
 from tortoise.transactions import in_transaction
 
-from zhenxun.services.cache import CacheRoot
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import DbLockType
 
@@ -114,6 +113,8 @@ class Model(TortoiseModel):
         cls, using_db: BaseDBAsyncClient | None = None, **kwargs: Any
     ) -> Self:
         """创建数据（使用CREATE锁）"""
+        from zhenxun.services.cache import CacheRoot
+
         async with cls._lock_context(DbLockType.CREATE):
             # 直接调用父类的_create方法避免触发save的锁
             result = await super().create(using_db=using_db, **kwargs)
@@ -129,6 +130,8 @@ class Model(TortoiseModel):
         **kwargs: Any,
     ) -> tuple[Self, bool]:
         """获取或创建数据（无锁版本，依赖数据库约束）"""
+        from zhenxun.services.cache import CacheRoot
+
         result = await super().get_or_create(
             defaults=defaults, using_db=using_db, **kwargs
         )
@@ -144,6 +147,8 @@ class Model(TortoiseModel):
         **kwargs: Any,
     ) -> tuple[Self, bool]:
         """更新或创建数据（使用UPSERT锁）"""
+        from zhenxun.services.cache import CacheRoot
+
         async with cls._lock_context(DbLockType.UPSERT):
             try:
                 # 先尝试更新（带行锁）
@@ -174,6 +179,8 @@ class Model(TortoiseModel):
         force_update: bool = False,
     ):
         """保存数据（根据操作类型自动选择锁）"""
+        from zhenxun.services.cache import CacheRoot
+
         lock_type = (
             DbLockType.CREATE
             if getattr(self, "id", None) is None
@@ -192,6 +199,8 @@ class Model(TortoiseModel):
                 )
 
     async def delete(self, using_db: BaseDBAsyncClient | None = None):
+        from zhenxun.services.cache import CacheRoot
+
         cache_type = getattr(self, "cache_type", None)
         key = self.__class__.get_cache_key(self) if cache_type else None
         # 执行删除操作

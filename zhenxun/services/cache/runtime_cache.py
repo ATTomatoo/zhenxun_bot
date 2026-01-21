@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
-import json
 import os
 import time
 from typing import Any, ClassVar
 import uuid
+
+import ujson as json
 
 from zhenxun.configs.config import Config
 from zhenxun.models.plugin_info import PluginInfo
@@ -540,6 +541,8 @@ class PluginInfoMemoryCache:
 
     @classmethod
     async def refresh(cls) -> None:
+        from zhenxun.models.plugin_info import PluginInfo
+
         async with cls._lock:
             plugins = await PluginInfo.all()
             by_module: dict[str, PluginInfo] = {}

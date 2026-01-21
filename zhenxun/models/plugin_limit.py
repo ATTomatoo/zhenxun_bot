@@ -1,6 +1,5 @@
 from tortoise import fields
 
-from zhenxun.services.cache.runtime_cache import PluginLimitMemoryCache
 from zhenxun.services.db_context import Model
 from zhenxun.utils.enum import LimitCheckType, LimitWatchType, PluginLimitType
 
@@ -42,21 +41,29 @@ class PluginLimit(Model):
 
     @classmethod
     async def create(cls, *args, **kwargs):
+        from zhenxun.services.cache.runtime_cache import PluginLimitMemoryCache
+
         result = await super().create(*args, **kwargs)
         await PluginLimitMemoryCache.upsert_from_model(result)
         return result
 
     @classmethod
     async def update_or_create(cls, *args, **kwargs):
+        from zhenxun.services.cache.runtime_cache import PluginLimitMemoryCache
+
         result = await super().update_or_create(*args, **kwargs)
         await PluginLimitMemoryCache.upsert_from_model(result[0])
         return result
 
     async def save(self, *args, **kwargs):
+        from zhenxun.services.cache.runtime_cache import PluginLimitMemoryCache
+
         await super().save(*args, **kwargs)
         await PluginLimitMemoryCache.upsert_from_model(self)
 
     async def delete(self, *args, **kwargs):
+        from zhenxun.services.cache.runtime_cache import PluginLimitMemoryCache
+
         limit_id = self.id
         await super().delete(*args, **kwargs)
         await PluginLimitMemoryCache.remove_by_id(limit_id)
