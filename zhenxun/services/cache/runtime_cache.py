@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 import uuid
 
 from zhenxun.configs.config import Config
+from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.services.cache.config import CacheMode
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import LimitCheckType, LimitWatchType, PluginLimitType
@@ -531,20 +532,18 @@ class RuntimeCacheSync:
 
 class PluginInfoMemoryCache:
     _lock: ClassVar[asyncio.Lock] = asyncio.Lock()
-    _by_module: ClassVar[dict[str, object]] = {}
-    _by_module_path: ClassVar[dict[str, object]] = {}
+    _by_module: ClassVar[dict[str, PluginInfo]] = {}
+    _by_module_path: ClassVar[dict[str, PluginInfo]] = {}
     _loaded: ClassVar[bool] = False
     _refresh_task: ClassVar[asyncio.Task | None] = None
     _last_refresh: ClassVar[float] = 0.0
 
     @classmethod
     async def refresh(cls) -> None:
-        from zhenxun.models.plugin_info import PluginInfo
-
         async with cls._lock:
             plugins = await PluginInfo.all()
-            by_module: dict[str, object] = {}
-            by_module_path: dict[str, object] = {}
+            by_module: dict[str, PluginInfo] = {}
+            by_module_path: dict[str, PluginInfo] = {}
             for plugin in plugins:
                 if plugin.module:
                     by_module[plugin.module] = plugin

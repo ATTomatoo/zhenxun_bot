@@ -3,7 +3,7 @@ import re
 
 import nonebot
 from nonebot.adapters import Bot
-from nonebot_plugin_uninfo import Member, SceneType, get_interface
+from nonebot_plugin_uninfo import Member, Scene, SceneType, get_interface
 
 from zhenxun.configs.config import Config
 from zhenxun.models.group_console import GroupConsole
@@ -74,7 +74,7 @@ class MemberUpdateManage:
         bot: Bot,
         group_id: str,
         *,
-        scene_map: dict[str, object] | None = None,
+        scene_map: dict[str, Scene] | None = None,
         platform: str | None = None,
     ) -> str:
         """更新群组成员信息
