@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 import json
 import os
@@ -123,9 +124,7 @@ def _env_get(name: str, default: str | None = None) -> str | None:
 
 def _redis_enabled() -> bool:
     mode = (_env_get("CACHE_MODE") or "").upper()
-    if mode != CacheMode.REDIS:
-        return False
-    return bool(_env_get("REDIS_HOST"))
+    return False if mode != CacheMode.REDIS else bool(_env_get("REDIS_HOST"))
 
 
 def is_cache_ready() -> bool:
@@ -148,8 +147,7 @@ def _parse_block_modules(value: str) -> frozenset[str]:
         part = part.strip()
         if not part:
             continue
-        part = part.strip(",").strip()
-        if part:
+        if part := part.strip(",").strip():
             items.append(part)
     return frozenset(items)
 
@@ -168,7 +166,7 @@ class BanEntry:
             return -1
         now_ts = time.time() if now is None else now
         left = int(self.ban_time + self.duration - now_ts)
-        return left if left > 0 else 0
+        return max(left, 0)
 
 
 @dataclass(frozen=True)
@@ -437,6 +435,8 @@ class RuntimeCacheSync:
                 decode_responses=True,
             )
             cls._pubsub = cls._redis.pubsub()
+            if cls._pubsub is None:
+                raise RuntimeError("redis pubsub init failed")
             await cls._pubsub.subscribe(cls._channel)
             cls._task = asyncio.create_task(cls._listen_loop())
             cls._ready = True
@@ -450,17 +450,13 @@ class RuntimeCacheSync:
         if cls._task and not cls._task.done():
             cls._task.cancel()
         cls._task = None
-        try:
+        with contextlib.suppress(Exception):
             if cls._pubsub is not None:
                 await cls._pubsub.close()
-        except Exception:
-            pass
         cls._pubsub = None
-        try:
+        with contextlib.suppress(Exception):
             if cls._redis is not None:
                 await cls._redis.close()
-        except Exception:
-            pass
         cls._redis = None
         cls._ready = False
 
@@ -474,7 +470,7 @@ class RuntimeCacheSync:
             "action": action,
             "data": data,
         }
-        asyncio.create_task(cls._publish(payload))
+        asyncio.create_task(cls._publish(payload))  # noqa: RUF006
 
     @classmethod
     async def _publish(cls, payload: dict[str, Any]) -> None:
@@ -507,7 +503,7 @@ class RuntimeCacheSync:
     async def _handle_message(cls, raw: Any) -> None:
         if raw is None:
             return
-        if isinstance(raw, (bytes, bytearray)):
+        if isinstance(raw, bytes | bytearray):
             try:
                 raw = raw.decode()
             except Exception:
@@ -631,7 +627,7 @@ class BotMemoryCache:
         if bot_id is None:
             return None
         bot_id = bot_id.strip()
-        return bot_id if bot_id else None
+        return bot_id or None
 
     @classmethod
     def _negative_ttl(cls) -> int:
@@ -678,8 +674,7 @@ class BotMemoryCache:
             return None
         if not cls._loaded:
             await cls.ensure_loaded()
-        entry = cls._by_id.get(bot_id)
-        if entry:
+        if entry := cls._by_id.get(bot_id):
             return entry
         if cls._is_negative(bot_id):
             return None
@@ -697,7 +692,7 @@ class BotMemoryCache:
                 return
             updated = BotSnapshot(
                 bot_id=entry.bot_id,
-                status=bool(status),
+                status=status,
                 platform=entry.platform,
                 block_plugins=entry.block_plugins,
                 block_tasks=entry.block_tasks,
@@ -781,7 +776,7 @@ class GroupMemoryCache:
         if value is None:
             return None
         value = value.strip()
-        return value if value else None
+        return value or None
 
     @classmethod
     def _key(
@@ -823,8 +818,7 @@ class GroupMemoryCache:
             by_key: dict[tuple[str, str], GroupSnapshot] = {}
             for record in records:
                 entry = GroupSnapshot.from_model(record)
-                key = cls._key(entry.group_id, entry.channel_id)
-                if key:
+                if key := cls._key(entry.group_id, entry.channel_id):
                     by_key[key] = entry
             cls._by_key = by_key
             cls._negative = {}
@@ -846,8 +840,7 @@ class GroupMemoryCache:
             return None
         if not cls._loaded:
             await cls.ensure_loaded()
-        entry = cls._by_key.get(key)
-        if entry:
+        if entry := cls._by_key.get(key):
             return entry
         if cls._is_negative(key):
             return None
@@ -935,7 +928,7 @@ class LevelUserMemoryCache:
         if value is None:
             return None
         value = value.strip()
-        return value if value else ""
+        return value or ""
 
     @classmethod
     def _key(cls, user_id: str | None, group_id: str | None) -> tuple[str, str] | None:
@@ -975,8 +968,7 @@ class LevelUserMemoryCache:
             by_key: dict[tuple[str, str], LevelUserSnapshot] = {}
             for record in records:
                 entry = LevelUserSnapshot.from_model(record)
-                key = cls._key(entry.user_id, entry.group_id)
-                if key:
+                if key := cls._key(entry.user_id, entry.group_id):
                     by_key[key] = entry
             cls._by_key = by_key
             cls._negative = {}
@@ -1012,8 +1004,7 @@ class LevelUserMemoryCache:
             return None
         if not cls._loaded:
             await cls.ensure_loaded()
-        entry = cls._by_key.get(key)
-        if entry:
+        if entry := cls._by_key.get(key):
             return entry
         if cls._is_negative(key):
             return None
@@ -1026,14 +1017,11 @@ class LevelUserMemoryCache:
     ) -> tuple[LevelUserSnapshot | None, LevelUserSnapshot | None]:
         if not cls._loaded:
             await cls.ensure_loaded()
-        global_user = None
         group_user = None
         global_key = cls._key(user_id, "")
-        if global_key:
-            global_user = cls._by_key.get(global_key)
+        global_user = cls._by_key.get(global_key) if global_key else None
         if group_id:
-            group_key = cls._key(user_id, group_id)
-            if group_key:
+            if group_key := cls._key(user_id, group_id):
                 group_user = cls._by_key.get(group_key)
         return global_user, group_user
 
@@ -1118,7 +1106,7 @@ class PluginLimitMemoryCache:
         if value is None:
             return None
         value = value.strip()
-        return value if value else None
+        return value or None
 
     @classmethod
     def _negative_ttl(cls) -> int:
@@ -1169,8 +1157,8 @@ class PluginLimitMemoryCache:
         await cls.refresh()
 
     @classmethod
-    async def get_limits(cls, module: str) -> list[PluginLimitSnapshot]:
-        module = cls._normalize(module)
+    async def get_limits(cls, module_: str) -> list[PluginLimitSnapshot]:
+        module = cls._normalize(module_)
         if not module:
             return []
         if not cls._loaded:
@@ -1234,8 +1222,7 @@ class PluginLimitMemoryCache:
         if not limit_id:
             return
         async with cls._lock:
-            entry = cls._by_id.pop(limit_id, None)
-            if entry:
+            if entry := cls._by_id.pop(limit_id, None):
                 cls._by_module[entry.module] = [
                     item
                     for item in cls._by_module.get(entry.module, [])
@@ -1293,17 +1280,14 @@ class BanMemoryCache:
         if value is None:
             return None
         value = value.strip()
-        return value if value else None
+        return value or None
 
     @classmethod
     def _build_entry(cls, record) -> BanEntry | None:
         user_id = cls._normalize_id(record.user_id)
         group_id = cls._normalize_id(record.group_id)
         duration = int(record.duration)
-        if duration == -1:
-            expire_at = None
-        else:
-            expire_at = float(record.ban_time + duration)
+        expire_at = None if duration == -1 else float(record.ban_time + duration)
         return BanEntry(
             user_id=user_id,
             group_id=group_id,
@@ -1341,7 +1325,8 @@ class BanMemoryCache:
             cls._loaded = True
             logger.debug(
                 "ban cache refreshed: "
-                f"user={len(by_user)} group={len(by_group)} user_group={len(by_user_group)}",
+                f"user={len(by_user)} group={len(by_group)}"
+                f" user_group={len(by_user_group)}",
                 LOG_COMMAND,
             )
 
@@ -1385,14 +1370,10 @@ class BanMemoryCache:
             if entry:
                 return entry
             entry = cls._by_user.get(user_id)
-            if entry:
-                return entry
-            return None
+            return entry or None
         if user_id:
             return cls._by_user.get(user_id)
-        if group_id:
-            return cls._by_group.get(group_id)
-        return None
+        return cls._by_group.get(group_id) if group_id else None
 
     @classmethod
     def remaining_time(cls, user_id: str | None, group_id: str | None) -> int:
@@ -1401,7 +1382,7 @@ class BanMemoryCache:
             return 0
         remaining = entry.remaining()
         if remaining == 0 and entry.duration != -1:
-            asyncio.create_task(cls.remove(entry.user_id, entry.group_id))
+            asyncio.create_task(cls.remove(entry.user_id, entry.group_id))  # noqa: RUF006
             return 0
         return remaining
 
@@ -1414,7 +1395,7 @@ class BanMemoryCache:
             return False
         remaining = entry.remaining()
         if remaining == 0 and entry.duration != -1:
-            asyncio.create_task(cls.remove(entry.user_id, entry.group_id))
+            asyncio.create_task(cls.remove(entry.user_id, entry.group_id))  # noqa: RUF006
             return False
         return entry.ban_level <= level
 
@@ -1423,15 +1404,21 @@ class BanMemoryCache:
         now_ts = time.time()
         expired: list[BanEntry] = []
         async with cls._lock:
-            for entry in list(cls._by_user.values()):
-                if entry.expire_at is not None and entry.expire_at <= now_ts:
-                    expired.append(entry)
-            for entry in list(cls._by_group.values()):
-                if entry.expire_at is not None and entry.expire_at <= now_ts:
-                    expired.append(entry)
-            for entry in list(cls._by_user_group.values()):
-                if entry.expire_at is not None and entry.expire_at <= now_ts:
-                    expired.append(entry)
+            expired.extend(
+                entry
+                for entry in list(cls._by_user.values())
+                if entry.expire_at is not None and entry.expire_at <= now_ts
+            )
+            expired.extend(
+                entry
+                for entry in list(cls._by_group.values())
+                if entry.expire_at is not None and entry.expire_at <= now_ts
+            )
+            expired.extend(
+                entry
+                for entry in list(cls._by_user_group.values())
+                if entry.expire_at is not None and entry.expire_at <= now_ts
+            )
             for entry in expired:
                 if entry.user_id and entry.group_id:
                     cls._by_user_group.pop((entry.user_id, entry.group_id), None)

@@ -3,9 +3,8 @@ import time
 from nonebot.adapters import Event
 from nonebot_plugin_uninfo import Uninfo
 
-from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.cache.runtime_cache import _parse_block_modules
+from zhenxun.services.cache.runtime_cache import GroupSnapshot, _parse_block_modules
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import BlockType
 
@@ -14,7 +13,9 @@ from .exception import IsSuperuserException, SkipPluginException
 from .utils import freq, is_poke, send_message
 
 
-def _get_group_block_sets(group: GroupConsole) -> tuple[frozenset[str], frozenset[str]]:
+def _get_group_block_sets(
+    group: GroupSnapshot,
+) -> tuple[frozenset[str], frozenset[str]]:
     block_set = getattr(group, "block_plugin_set", None)
     super_block_set = getattr(group, "superuser_block_plugin_set", None)
     if block_set is None:
@@ -32,7 +33,7 @@ class GroupCheck:
     def __init__(
         self,
         plugin: PluginInfo,
-        group: GroupConsole,
+        group: GroupSnapshot,
         session: Uninfo,
         is_poke: bool,
         skip_group_block: bool,
@@ -109,7 +110,7 @@ class GroupCheck:
 
 
 class PluginCheck:
-    def __init__(self, group: GroupConsole | None, session: Uninfo, is_poke: bool):
+    def __init__(self, group: GroupSnapshot | None, session: Uninfo, is_poke: bool):
         self.session = session
         self.is_poke = is_poke
         self.group_data = group
@@ -176,7 +177,7 @@ class PluginCheck:
 
 async def auth_plugin(
     plugin: PluginInfo,
-    group: GroupConsole | None,
+    group: GroupSnapshot | None,
     session: Uninfo,
     event: Event,
     *,

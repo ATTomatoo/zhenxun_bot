@@ -74,4 +74,4 @@ driver = nonebot.get_driver()
 async def _start_send_queue():
     patch_send_queue()
     for idx in range(_WORKERS):
-        asyncio.create_task(_worker(idx))
+        asyncio.create_task(_worker(idx))  # noqa: RUF006

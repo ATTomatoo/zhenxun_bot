@@ -3,9 +3,8 @@ import time
 from nonebot_plugin_alconna import At
 from nonebot_plugin_uninfo import Uninfo
 
-from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
+from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache, LevelUserSnapshot
 from zhenxun.services.log import logger
 from zhenxun.utils.utils import get_entity_ids
 
@@ -17,7 +16,8 @@ from .utils import send_message
 async def auth_admin(
     plugin: PluginInfo,
     session: Uninfo,
-    cached_levels: tuple[LevelUser | None, LevelUser | None] | None = None,
+    cached_levels: tuple[LevelUserSnapshot | None, LevelUserSnapshot | None]
+    | None = None,
 ):
     """管理员命令 个人权限
 
@@ -33,8 +33,8 @@ async def auth_admin(
     try:
         entity = get_entity_ids(session)
 
-        global_user: LevelUser | None = None
-        group_users: LevelUser | None = None
+        global_user = None
+        group_users = None
 
         if cached_levels is not None:
             global_user, group_users = cached_levels

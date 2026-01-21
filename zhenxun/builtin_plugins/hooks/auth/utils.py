@@ -62,7 +62,7 @@ async def send_message(
             )
 
     if background:
-        asyncio.create_task(_send())
+        asyncio.create_task(_send())  # noqa: RUF006
         return
     await _send()
 

@@ -74,7 +74,7 @@ def _send_limit_notice(message: str, format_kwargs: dict[str, Any], key: str) ->
         except Exception as exc:
             logger.error("limit notice send failed", LOGGER_COMMAND, e=exc)
 
-    asyncio.create_task(_send())
+    asyncio.create_task(_send())  # noqa: RUF006
 
 
 class LimitManager:
@@ -133,7 +133,7 @@ class LimitManager:
             cls.is_updating = False
 
     @classmethod
-    def add_limit(cls, limit: PluginLimit):
+    def add_limit(cls, limit: PluginLimit | PluginLimitSnapshot):
         """添加限制
 
         参数:
@@ -145,11 +145,11 @@ class LimitManager:
                 cls.block_limit[limit.module] = Limit(
                     limit=limit, limiter=UserBlockLimiter()
                 )
-            elif limit.limit_type == PluginLimitType.CD:
+            elif limit.limit_type == PluginLimitType.CD and limit.cd:
                 cls.cd_limit[limit.module] = Limit(
                     limit=limit, limiter=FreqLimiter(limit.cd)
                 )
-            elif limit.limit_type == PluginLimitType.COUNT:
+            elif limit.limit_type == PluginLimitType.COUNT and limit.max_count:
                 cls.count_limit[limit.module] = Limit(
                     limit=limit, limiter=CountLimiter(limit.max_count)
                 )
@@ -205,8 +205,8 @@ class LimitManager:
         try:
             await PluginLimitMemoryCache.ensure_loaded()
             limits = await PluginLimitMemoryCache.get_limits(module)
-            cls.module_limit_cache[module] = (current_time, limits, False)
-            return limits
+            cls.module_limit_cache[module] = (current_time, limits, False)  # type: ignore
+            return limits  # type: ignore
         except Exception as exc:
             logger.error(f"get module limits failed: {module}", LOGGER_COMMAND, e=exc)
             cls.module_limit_cache[module] = (current_time, [], True)

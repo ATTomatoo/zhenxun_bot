@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import time
+from typing import cast
 
 from nonebot import get_loaded_plugins
 from nonebot.adapters import Bot, Event
@@ -174,7 +175,10 @@ def _event_cache_key(event: Event, session: Uninfo, entity) -> str:
     platform = PlatformUtils.get_platform(session)
     group_id = entity.group_id or ""
     channel_id = entity.channel_id or ""
-    return f"{platform}:{session.self_id}:{entity.user_id}:{group_id}:{channel_id}:{msg_id}"
+    return (
+        f"{platform}:{session.self_id}:{entity.user_id}"
+        f":{group_id}:{channel_id}:{msg_id}"
+    )
 
 
 def _get_event_cache(event: Event, session: Uninfo, entity):
@@ -285,6 +289,7 @@ async def _get_route_context(text: str, event_cache: dict | None) -> set[str]:
 
 
 async def _has_limits_cached(module: str, event_cache: dict | None) -> bool:
+    module_limit_cache = {}
     if event_cache is not None:
         module_limit_cache = event_cache.setdefault("module_limits", {})
         if module in module_limit_cache:
@@ -485,13 +490,13 @@ async def get_plugin_and_user(
     """Fetch plugin info and read user only when cost is required."""
     user_dao = DataAccess(UserConsole)
 
-    plugin = None
+    plugin: PluginInfo | None = None
     if event_cache is not None:
         plugin_cache = event_cache.setdefault("plugin_cache", {})
         if module in plugin_cache:
             plugin = plugin_cache[module]
     if plugin is None:
-        plugin = await PluginInfoMemoryCache.get_by_module(module)
+        plugin = cast(PluginInfo, await PluginInfoMemoryCache.get_by_module(module))
         if event_cache is not None:
             event_cache.setdefault("plugin_cache", {})[module] = plugin
 
@@ -674,7 +679,7 @@ async def auth_precheck(
     if session.user.id in bot.config.superusers:
         return
 
-    plugin = await PluginInfoMemoryCache.get_by_module(module)
+    plugin = cast(PluginInfo, await PluginInfoMemoryCache.get_by_module(module))
     if not plugin:
         return
 
@@ -802,46 +807,24 @@ async def auth(
                     hook_times["auth_admin"] = f"{time.time() - admin_start:.3f}s(pre)"
                 admin_checked_pre = True
 
-        ban_cache_state = None
-        if event_cache is not None:
-            ban_cache_state = event_cache.get("ban_state")
-        if skip_ban:
-            if ban_cache_state is True:
-                hook_times["auth_ban"] = "cached"
-                raise SkipPluginException("user or group banned (cached)")
-            if ban_cache_state is None:
-                ban_start = time.time()
-                try:
-                    await auth_ban(matcher, bot, session, plugin)
-                    hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
-                    if event_cache is not None:
-                        event_cache["ban_state"] = False
-                except SkipPluginException:
-                    hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
-                    if event_cache is not None:
-                        event_cache["ban_state"] = True
-                    raise
-            else:
-                hook_times["auth_ban"] = "skipped"
+        ban_cache_state = None if event_cache is None else event_cache.get("ban_state")
+        if ban_cache_state is True:
+            hook_times["auth_ban"] = "cached"
+            raise SkipPluginException("user or group banned (cached)")
+        if ban_cache_state is None:
+            ban_start = time.time()
+            try:
+                await auth_ban(matcher, bot, session, plugin)
+                hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
+                if event_cache is not None:
+                    event_cache["ban_state"] = False
+            except SkipPluginException:
+                hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
+                if event_cache is not None:
+                    event_cache["ban_state"] = True
+                raise
         else:
-            if ban_cache_state is True:
-                hook_times["auth_ban"] = "cached"
-                raise SkipPluginException("user or group banned (cached)")
-            if ban_cache_state is None:
-                ban_start = time.time()
-                try:
-                    await auth_ban(matcher, bot, session, plugin)
-                    hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
-                    if event_cache is not None:
-                        event_cache["ban_state"] = False
-                except SkipPluginException:
-                    hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
-                    if event_cache is not None:
-                        event_cache["ban_state"] = True
-                    raise
-            else:
-                hook_times["auth_ban"] = "cached"
-
+            hook_times["auth_ban"] = "skipped" if skip_ban else "cached"
         # 获取插件费用
         if not route_skip_checks and plugin.cost_gold > 0:
             cost_start = time.time()
@@ -889,22 +872,21 @@ async def auth(
             hook_tasks.append(
                 time_hook(auth_bot(plugin, bot.self_id), "auth_bot", hook_times)
             )
+        elif bot_timeout:
+            hook_times["auth_bot"] = "timeout"
         else:
-            if bot_timeout:
-                hook_times["auth_bot"] = "timeout"
-            else:
-                hook_tasks.append(
-                    time_hook(
-                        auth_bot(
-                            plugin,
-                            bot.self_id,
-                            bot_data=bot_data,
-                            skip_fetch=True,
-                        ),
-                        "auth_bot",
-                        hook_times,
-                    )
+            hook_tasks.append(
+                time_hook(
+                    auth_bot(
+                        plugin,
+                        bot.self_id,
+                        bot_data=bot_data,
+                        skip_fetch=True,
+                    ),
+                    "auth_bot",
+                    hook_times,
                 )
+            )
 
         if session.user.id in bot.config.superusers:
             hook_times["auth_group"] = "superuser"
@@ -955,17 +937,13 @@ async def auth(
         else:
             hook_times["auth_plugin"] = "skipped"
 
-        if not route_skip_checks:
-            has_limits = await _has_limits_cached(module, event_cache)
-            if has_limits:
-                hook_tasks.append(
-                    time_hook(auth_limit(plugin, session), "auth_limit", hook_times)
-                )
-            else:
-                hook_times["auth_limit"] = "skipped"
+        has_limits = await _has_limits_cached(module, event_cache)
+        if has_limits:
+            hook_tasks.append(
+                time_hook(auth_limit(plugin, session), "auth_limit", hook_times)
+            )
         else:
             hook_times["auth_limit"] = "skipped"
-
         if hook_tasks:
             # 进入 hooks 并行检查区域（会在高并发时排队）
             await _enter_hooks_section()
