@@ -2,11 +2,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
+import nonebot
 from nonebot.adapters.onebot.v11 import Bot
 from nonebot.adapters.onebot.v11.event import GroupMessageEvent
 from nonebot.adapters.onebot.v11.message import Message
 from nonebug import App
-import pytest
 from pytest_mock import MockerFixture
 
 from tests.config import BotId, GroupId, MessageId, UserId
@@ -15,7 +15,7 @@ from tests.utils import _v11_group_message_event
 test_path = Path(__file__).parent.parent.parent
 
 
-@pytest.mark.xfail
+# @pytest.mark.xfail
 async def test_add_plugin_basic(
     app: App,
     mocker: MockerFixture,
@@ -27,6 +27,14 @@ async def test_add_plugin_basic(
     """
     from zhenxun.builtin_plugins.plugin_store import _matcher
 
+    # Clear hooks
+    if hasattr(nonebot.message, "_event_preprocessors"):
+        nonebot.message._event_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_preprocessors"):
+        nonebot.message._run_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_postprocessors"):
+        nonebot.message._run_postprocessors.clear()
+
     mock_base_path = mocker.patch(
         "zhenxun.builtin_plugins.plugin_store.data_source.BASE_PATH",
         new=tmp_path / "zhenxun",
@@ -37,7 +45,7 @@ async def test_add_plugin_basic(
     async with app.test_matcher(_matcher) as ctx:
         bot = create_bot(ctx)
         bot: Bot = cast(Bot, bot)
-        raw_message = f"添加插件 {plugin_id}"
+        raw_message = f"插件商店 add {plugin_id}"
         event: GroupMessageEvent = _v11_group_message_event(
             message=raw_message,
             self_id=BotId.QQ_BOT,
@@ -49,7 +57,7 @@ async def test_add_plugin_basic(
         ctx.receive_event(bot=bot, event=event)
         ctx.should_call_send(
             event=event,
-            message=Message(message=f"正在添加插件 Module: {plugin_id}"),
+            message=Message(message=f"正在添加插件 Module/名称: {plugin_id}"),
             result=None,
             bot=bot,
         )
@@ -62,7 +70,7 @@ async def test_add_plugin_basic(
     assert (mock_base_path / "plugins" / "search_image" / "__init__.py").is_file()
 
 
-@pytest.mark.xfail
+# @pytest.mark.xfail
 async def test_add_plugin_basic_commit_version(
     app: App,
     mocker: MockerFixture,
@@ -74,6 +82,14 @@ async def test_add_plugin_basic_commit_version(
     """
     from zhenxun.builtin_plugins.plugin_store import _matcher
 
+    # Clear hooks
+    if hasattr(nonebot.message, "_event_preprocessors"):
+        nonebot.message._event_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_preprocessors"):
+        nonebot.message._run_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_postprocessors"):
+        nonebot.message._run_postprocessors.clear()
+
     mock_base_path = mocker.patch(
         "zhenxun.builtin_plugins.plugin_store.data_source.BASE_PATH",
         new=tmp_path / "zhenxun",
@@ -84,19 +100,19 @@ async def test_add_plugin_basic_commit_version(
     async with app.test_matcher(_matcher) as ctx:
         bot = create_bot(ctx)
         bot: Bot = cast(Bot, bot)
-        raw_message = f"添加插件 {plugin_id}"
+        raw_message = f"插件商店 add {plugin_id}"
         event: GroupMessageEvent = _v11_group_message_event(
             message=raw_message,
             self_id=BotId.QQ_BOT,
             user_id=UserId.SUPERUSER,
             group_id=GroupId.GROUP_ID_LEVEL_5,
-            message_id=MessageId.MESSAGE_ID,
+            message_id=MessageId.MESSAGE_ID + 10,
             to_me=True,
         )
         ctx.receive_event(bot=bot, event=event)
         ctx.should_call_send(
             event=event,
-            message=Message(message=f"正在添加插件 Module: {plugin_id}"),
+            message=Message(message=f"正在添加插件 Module/名称: {plugin_id}"),
             result=None,
             bot=bot,
         )
@@ -109,7 +125,7 @@ async def test_add_plugin_basic_commit_version(
     assert (mock_base_path / "plugins" / "bilibili_sub" / "__init__.py").is_file()
 
 
-@pytest.mark.xfail
+# @pytest.mark.xfail
 async def test_add_plugin_basic_is_not_dir(
     app: App,
     mocker: MockerFixture,
@@ -121,6 +137,14 @@ async def test_add_plugin_basic_is_not_dir(
     """
     from zhenxun.builtin_plugins.plugin_store import _matcher
 
+    # Clear hooks
+    if hasattr(nonebot.message, "_event_preprocessors"):
+        nonebot.message._event_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_preprocessors"):
+        nonebot.message._run_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_postprocessors"):
+        nonebot.message._run_postprocessors.clear()
+
     mock_base_path = mocker.patch(
         "zhenxun.builtin_plugins.plugin_store.data_source.BASE_PATH",
         new=tmp_path / "zhenxun",
@@ -131,19 +155,19 @@ async def test_add_plugin_basic_is_not_dir(
     async with app.test_matcher(_matcher) as ctx:
         bot = create_bot(ctx)
         bot: Bot = cast(Bot, bot)
-        raw_message = f"添加插件 {plugin_id}"
+        raw_message = f"插件商店 add {plugin_id}"
         event: GroupMessageEvent = _v11_group_message_event(
             message=raw_message,
             self_id=BotId.QQ_BOT,
             user_id=UserId.SUPERUSER,
             group_id=GroupId.GROUP_ID_LEVEL_5,
-            message_id=MessageId.MESSAGE_ID,
+            message_id=MessageId.MESSAGE_ID + 20,
             to_me=True,
         )
         ctx.receive_event(bot=bot, event=event)
         ctx.should_call_send(
             event=event,
-            message=Message(message=f"正在添加插件 Module: {plugin_id}"),
+            message=Message(message=f"正在添加插件 Module/名称: {plugin_id}"),
             result=None,
             bot=bot,
         )
@@ -156,7 +180,7 @@ async def test_add_plugin_basic_is_not_dir(
     assert (mock_base_path / "plugins" / "jitang.py").is_file()
 
 
-@pytest.mark.xfail
+# @pytest.mark.xfail
 async def test_add_plugin_extra(
     app: App,
     mocker: MockerFixture,
@@ -168,6 +192,14 @@ async def test_add_plugin_extra(
     """
     from zhenxun.builtin_plugins.plugin_store import _matcher
 
+    # Clear hooks
+    if hasattr(nonebot.message, "_event_preprocessors"):
+        nonebot.message._event_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_preprocessors"):
+        nonebot.message._run_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_postprocessors"):
+        nonebot.message._run_postprocessors.clear()
+
     mock_base_path = mocker.patch(
         "zhenxun.builtin_plugins.plugin_store.data_source.BASE_PATH",
         new=tmp_path / "zhenxun",
@@ -178,19 +210,19 @@ async def test_add_plugin_extra(
     async with app.test_matcher(_matcher) as ctx:
         bot = create_bot(ctx)
         bot: Bot = cast(Bot, bot)
-        raw_message: str = f"添加插件 {plugin_id}"
+        raw_message: str = f"插件商店 add {plugin_id}"
         event: GroupMessageEvent = _v11_group_message_event(
             message=raw_message,
             self_id=BotId.QQ_BOT,
             user_id=UserId.SUPERUSER,
             group_id=GroupId.GROUP_ID_LEVEL_5,
-            message_id=MessageId.MESSAGE_ID,
+            message_id=MessageId.MESSAGE_ID + 30,
             to_me=True,
         )
         ctx.receive_event(bot=bot, event=event)
         ctx.should_call_send(
             event=event,
-            message=Message(message=f"正在添加插件 Module: {plugin_id}"),
+            message=Message(message=f"正在添加插件 Module/名称: {plugin_id}"),
             result=None,
             bot=bot,
         )
@@ -203,7 +235,7 @@ async def test_add_plugin_extra(
     assert (mock_base_path / "plugins" / "github_sub" / "__init__.py").is_file()
 
 
-@pytest.mark.xfail
+# @pytest.mark.xfail
 async def test_plugin_not_exist_add(
     app: App,
     create_bot: Callable,
@@ -213,18 +245,26 @@ async def test_plugin_not_exist_add(
     """
     from zhenxun.builtin_plugins.plugin_store import _matcher
 
+    # Clear hooks
+    if hasattr(nonebot.message, "_event_preprocessors"):
+        nonebot.message._event_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_preprocessors"):
+        nonebot.message._run_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_postprocessors"):
+        nonebot.message._run_postprocessors.clear()
+
     plugin_id = -1
 
     async with app.test_matcher(_matcher) as ctx:
         bot = create_bot(ctx)
         bot: Bot = cast(Bot, bot)
-        raw_message = f"添加插件 {plugin_id}"
+        raw_message = f"插件商店 add {plugin_id}"
         event: GroupMessageEvent = _v11_group_message_event(
             message=raw_message,
             self_id=BotId.QQ_BOT,
             user_id=UserId.SUPERUSER,
             group_id=GroupId.GROUP_ID_LEVEL_5,
-            message_id=MessageId.MESSAGE_ID,
+            message_id=MessageId.MESSAGE_ID + 40,
             to_me=True,
         )
         ctx.receive_event(bot=bot, event=event)
@@ -242,7 +282,7 @@ async def test_plugin_not_exist_add(
         )
 
 
-@pytest.mark.xfail
+# @pytest.mark.xfail
 async def test_add_plugin_exist(
     app: App,
     mocker: MockerFixture,
@@ -253,6 +293,14 @@ async def test_add_plugin_exist(
     """
     from zhenxun.builtin_plugins.plugin_store import _matcher
 
+    # Clear hooks
+    if hasattr(nonebot.message, "_event_preprocessors"):
+        nonebot.message._event_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_preprocessors"):
+        nonebot.message._run_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_postprocessors"):
+        nonebot.message._run_postprocessors.clear()
+
     mocker.patch(
         "zhenxun.builtin_plugins.plugin_store.data_source.StoreManager.get_loaded_plugins",
         return_value=[("search_image", "0.1")],
@@ -262,13 +310,13 @@ async def test_add_plugin_exist(
     async with app.test_matcher(_matcher) as ctx:
         bot = create_bot(ctx)
         bot: Bot = cast(Bot, bot)
-        raw_message = f"添加插件 {plugin_id}"
+        raw_message = f"插件商店 add {plugin_id}"
         event: GroupMessageEvent = _v11_group_message_event(
             message=raw_message,
             self_id=BotId.QQ_BOT,
             user_id=UserId.SUPERUSER,
             group_id=GroupId.GROUP_ID_LEVEL_5,
-            message_id=MessageId.MESSAGE_ID,
+            message_id=MessageId.MESSAGE_ID + 50,
             to_me=True,
         )
         ctx.receive_event(bot=bot, event=event)

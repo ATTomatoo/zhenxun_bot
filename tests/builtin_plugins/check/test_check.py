@@ -4,10 +4,10 @@ from pathlib import Path
 import platform
 from typing import cast
 
+import nonebot
 from nonebot.adapters.onebot.v11 import Bot
 from nonebot.adapters.onebot.v11.event import GroupMessageEvent
 from nonebug import App
-import pytest
 from pytest_mock import MockerFixture
 
 from tests.config import BotId, GroupId, MessageId, UserId
@@ -119,6 +119,15 @@ async def test_check(
         mock_build_message_return,
         mock_get_config,
     ) = init_mocker(mocker, tmp_path)
+
+    # Clean up global hooks to avoid interference
+    if hasattr(nonebot.message, "_event_preprocessors"):
+        nonebot.message._event_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_preprocessors"):
+        nonebot.message._run_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_postprocessors"):
+        nonebot.message._run_postprocessors.clear()
+
     async with app.test_matcher(_self_check_matcher) as ctx:
         bot = create_bot(ctx)
         bot: Bot = cast(Bot, bot)
@@ -141,7 +150,6 @@ async def test_check(
     mock_build_message_return.send.assert_awaited_once()
 
 
-@pytest.mark.xfail
 async def test_check_arm(
     app: App,
     mocker: MockerFixture,
@@ -160,9 +168,19 @@ async def test_check_arm(
         version="#22~20.04.1-Ubuntu SMP Wed Aug 24 11:13:15 UTC 2022",
         machine="aarch64",
     )  # type: ignore
-    mock_subprocess_check_output = mocker.patch(
-        "zhenxun.builtin_plugins.check.data_source.subprocess.check_output"
+
+    # Mock subprocess.run instead of check_output, as the implementation has changed
+    mock_subprocess_run = mocker.patch(
+        "zhenxun.builtin_plugins.check.data_source.subprocess.run"
     )
+    mock_run_return = mocker.MagicMock()
+    mock_run_return.returncode = 0
+    # Simulate lscpu output
+    mock_run_return.stdout = (
+        "CPU MHz: 2400.000\nModel name: ARMv8 Processor rev 0 (v8l)"
+    )
+    mock_subprocess_run.return_value = mock_run_return
+
     mock_environ_copy = mocker.patch(
         "zhenxun.builtin_plugins.check.data_source.os.environ.copy"
     )
@@ -183,6 +201,14 @@ async def test_check_arm(
     mock_cpuinfo.get_cpu_info.return_value = {}
     mock_psutil.cpu_freq.return_value = {}
 
+    # Clean up global hooks to avoid interference
+    if hasattr(nonebot.message, "_event_preprocessors"):
+        nonebot.message._event_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_preprocessors"):
+        nonebot.message._run_preprocessors.clear()
+    if hasattr(nonebot.message, "_run_postprocessors"):
+        nonebot.message._run_postprocessors.clear()
+
     async with app.test_matcher(_self_check_matcher) as ctx:
         bot = create_bot(ctx)
         bot: Bot = cast(Bot, bot)
@@ -196,20 +222,18 @@ async def test_check_arm(
             to_me=True,
         )
         ctx.receive_event(bot=bot, event=event)
-        ctx.should_ignore_rule(_self_check_matcher)
-    mock_subprocess_check_output.assert_has_calls(
-        [
-            mocker.call(["lscpu"], env=mock_environ_copy_return),
-            mocker.call().decode(),
-            mocker.call().decode().splitlines(),
-            mocker.call().decode().splitlines().__iter__(),
-            mocker.call(["dmidecode", "-s", "processor-frequency"]),
-            mocker.call().decode(),
-            mocker.call().decode().split(),
-            mocker.call().decode().split().__getitem__(0),
-            mocker.call().decode().split().__getitem__().__float__(),
-        ]  # type: ignore
+        ctx.should_pass_rule(_self_check_matcher)
+        ctx.should_pass_permission(_self_check_matcher)
+
+    # Verify subprocess.run was called with lscpu
+    mock_subprocess_run.assert_called_with(
+        ["lscpu"],
+        capture_output=True,
+        text=True,
+        env=mock_environ_copy_return,
+        timeout=10,
     )
+
     mock_render_service.assert_awaited_once()
     mock_build_message.assert_called_once_with(mock_render_service_return)
     mock_build_message_return.send.assert_awaited_once()
