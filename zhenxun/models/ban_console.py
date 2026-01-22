@@ -96,7 +96,6 @@ class BanConsole(Model):
             bool: 权限判断，能否unban
         """
         logger.debug("检测用户被ban等级", target=f"{group_id}:{user_id}")
-        await BanMemoryCache.ensure_loaded()
         return BanMemoryCache.check_ban_level(user_id, group_id, level)
 
     @classmethod
@@ -112,7 +111,6 @@ class BanConsole(Model):
             int: ban剩余时长，-1时为永久ban，0表示未被ban
         """
         logger.debug("获取用户ban时长", target=f"{group_id}:{user_id}")
-        await BanMemoryCache.ensure_loaded()
         return BanMemoryCache.remaining_time(user_id, group_id)
 
     @classmethod

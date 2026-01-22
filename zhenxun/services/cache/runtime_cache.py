@@ -235,11 +235,15 @@ class GroupSnapshot:
     platform: str | None
     block_plugin_set: frozenset[str] = field(default_factory=frozenset)
     superuser_block_plugin_set: frozenset[str] = field(default_factory=frozenset)
+    block_task_set: frozenset[str] = field(default_factory=frozenset)
+    superuser_block_task_set: frozenset[str] = field(default_factory=frozenset)
 
     @classmethod
     def from_model(cls, model) -> "GroupSnapshot":
         block_plugin = getattr(model, "block_plugin", "") or ""
         superuser_block_plugin = getattr(model, "superuser_block_plugin", "") or ""
+        block_task = getattr(model, "block_task", "") or ""
+        superuser_block_task = getattr(model, "superuser_block_task", "") or ""
         return cls(
             group_id=str(model.group_id),
             channel_id=getattr(model, "channel_id", None),
@@ -252,11 +256,13 @@ class GroupSnapshot:
             group_flag=int(getattr(model, "group_flag", 0) or 0),
             block_plugin=block_plugin,
             superuser_block_plugin=superuser_block_plugin,
-            block_task=getattr(model, "block_task", "") or "",
-            superuser_block_task=getattr(model, "superuser_block_task", "") or "",
+            block_task=block_task,
+            superuser_block_task=superuser_block_task,
             platform=getattr(model, "platform", None),
             block_plugin_set=_parse_block_modules(block_plugin),
             superuser_block_plugin_set=_parse_block_modules(superuser_block_plugin),
+            block_task_set=_parse_block_modules(block_task),
+            superuser_block_task_set=_parse_block_modules(superuser_block_task),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -281,6 +287,8 @@ class GroupSnapshot:
     def from_payload(cls, payload: dict[str, Any]) -> "GroupSnapshot":
         block_plugin = payload.get("block_plugin", "") or ""
         superuser_block_plugin = payload.get("superuser_block_plugin", "") or ""
+        block_task = payload.get("block_task", "") or ""
+        superuser_block_task = payload.get("superuser_block_task", "") or ""
         return cls(
             group_id=str(payload.get("group_id", "")),
             channel_id=payload.get("channel_id"),
@@ -293,11 +301,13 @@ class GroupSnapshot:
             group_flag=int(payload.get("group_flag", 0) or 0),
             block_plugin=block_plugin,
             superuser_block_plugin=superuser_block_plugin,
-            block_task=payload.get("block_task", "") or "",
-            superuser_block_task=payload.get("superuser_block_task", "") or "",
+            block_task=block_task,
+            superuser_block_task=superuser_block_task,
             platform=payload.get("platform"),
             block_plugin_set=_parse_block_modules(block_plugin),
             superuser_block_plugin_set=_parse_block_modules(superuser_block_plugin),
+            block_task_set=_parse_block_modules(block_task),
+            superuser_block_task_set=_parse_block_modules(superuser_block_task),
         )
 
 
@@ -840,6 +850,25 @@ class GroupMemoryCache:
         if cls._loaded:
             return
         await cls.refresh()
+
+    @classmethod
+    def is_loaded(cls) -> bool:
+        return cls._loaded
+
+    @classmethod
+    async def get_if_ready(
+        cls, group_id: str | None, channel_id: str | None = None
+    ) -> GroupSnapshot | None:
+        key = cls._key(group_id, channel_id)
+        if not key or not cls._loaded:
+            return None
+        entry = cls._by_key.get(key)
+        if entry:
+            return entry
+        if cls._is_negative(key):
+            return None
+        cls._mark_negative(key)
+        return None
 
     @classmethod
     async def get(

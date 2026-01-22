@@ -131,7 +131,6 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
     """
     if not user_id and not group_id:
         return 0
-    await BanMemoryCache.ensure_loaded()
     return BanMemoryCache.remaining_time(user_id, group_id)
 
 def check_plugin_type(matcher: Matcher) -> bool:

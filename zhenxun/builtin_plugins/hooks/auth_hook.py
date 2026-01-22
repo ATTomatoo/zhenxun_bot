@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import time
 
 from nonebot.adapters import Bot, Event
@@ -22,13 +22,29 @@ from .auth_checker import (
     auth_precheck,
     _get_event_cache,
 )
+_SKIP_AUTH_PLUGINS = {"chat_message"}
 
 
-# # 权限检测
-@run_preprocessor
+def _skip_auth_for_plugin(matcher: Matcher) -> bool:
+    module = matcher.plugin_name or ""
+    if module in _SKIP_AUTH_PLUGINS:
+        return True
+    plugin = matcher.plugin
+    if not plugin:
+        return False
+    plugin_name = getattr(plugin, "name", "") or ""
+    if plugin_name in _SKIP_AUTH_PLUGINS:
+        return True
+    module_name = getattr(plugin, "module_name", "") or ""
+    return module_name.endswith("chat_message")
+
+
+# # 权限检�?@run_preprocessor
 async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: UniMsg):
     if event.get_type() == "message" and not is_cache_ready():
         raise IgnoredException("cache not ready ignore")
+    if _skip_auth_for_plugin(matcher):
+        return
     start_time = time.time()
     entity = get_entity_ids(session)
     event_cache = _get_event_cache(event, session, entity)
@@ -68,7 +84,8 @@ async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: 
     if now - last_log > 1.0:
         setattr(_, "_last_log", now)
         logger.debug(
-            f"权限检测耗时：{time.time() - start_time}秒", LOGGER_COMMAND
+            f"权限检测耗时：{time.time() - start_time:.3f}s",
+            LOGGER_COMMAND,
         )
 
 

@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 from nonebot import get_driver, on_message
@@ -75,7 +76,11 @@ def rule(event: Event, message: UniMsg, session: Uninfo) -> bool:
 
 chat_history = on_message(rule=rule, priority=1, block=False)
 
-TEMP_LIST = []
+_QUEUE_MAX = 5000
+_DROP_LOG_INTERVAL = 5.0
+_drop_count = 0
+_last_drop_log = 0.0
+_HISTORY_QUEUE: asyncio.Queue[ChatHistory] = asyncio.Queue(maxsize=_QUEUE_MAX)
 
 
 @chat_history.handle()
@@ -86,16 +91,25 @@ async def _(message: UniMsg, session: Uninfo):
         _LAST_GROUP_SAVE[entity.group_id] = now
     if entity.user_id:
         _LAST_USER_SAVE[entity.user_id] = now
-    TEMP_LIST.append(
-        ChatHistory(
-            user_id=entity.user_id,
-            group_id=entity.group_id,
-            text=str(message),
-            plain_text=message.extract_plain_text(),
-            bot_id=session.self_id,
-            platform=session.platform,
-        )
+    global _drop_count, _last_drop_log
+    record = ChatHistory(
+        user_id=entity.user_id,
+        group_id=entity.group_id,
+        text=str(message),
+        plain_text=message.extract_plain_text(),
+        bot_id=session.self_id,
+        platform=session.platform,
     )
+    try:
+        _HISTORY_QUEUE.put_nowait(record)
+    except asyncio.QueueFull:
+        _drop_count += 1
+        if now - _last_drop_log > _DROP_LOG_INTERVAL:
+            _last_drop_log = now
+            logger.warning(
+                f"chat_history queue full, dropped {_drop_count} messages",
+                "chat_history",
+            )
 
 
 @scheduler.scheduled_job(
@@ -104,8 +118,12 @@ async def _(message: UniMsg, session: Uninfo):
 )
 async def _():
     try:
-        message_list = TEMP_LIST.copy()
-        TEMP_LIST.clear()
+        message_list = []
+        while True:
+            try:
+                message_list.append(_HISTORY_QUEUE.get_nowait())
+            except asyncio.QueueEmpty:
+                break
         if message_list:
             await ChatHistory.bulk_create(message_list)
             logger.debug(f"批量添加聊天记录 {len(message_list)} 条", "定时任务")

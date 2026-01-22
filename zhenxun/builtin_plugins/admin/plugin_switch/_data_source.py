@@ -182,7 +182,7 @@ class PluginManager:
             )
             return f"成功将所有功能进群默认状态修改为: {'开启' if status else '关闭'}"
         if group_id:
-            if group := await GroupConsole.get_group(group_id=group_id):
+            if group := await GroupConsole.get_group_db(group_id=group_id):
                 module_list = cast(
                     list[str],
                     await PluginInfo.filter(plugin_type=PluginType.NORMAL).values_list(

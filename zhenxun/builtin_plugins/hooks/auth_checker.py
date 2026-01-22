@@ -327,7 +327,7 @@ async def _get_group_cached(entity, event_cache):
         return None
     if event_cache is not None and "group" in event_cache:
         return event_cache["group"]
-    group = await GroupMemoryCache.get(entity.group_id, entity.channel_id)
+    group = await GroupMemoryCache.get_if_ready(entity.group_id, entity.channel_id)
     if event_cache is not None:
         event_cache["group"] = group
     return group

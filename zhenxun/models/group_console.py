@@ -6,7 +6,7 @@ from tortoise.backends.base.client import BaseDBAsyncClient
 
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
-from zhenxun.services.cache.runtime_cache import GroupMemoryCache
+from zhenxun.services.cache.runtime_cache import GroupMemoryCache, GroupSnapshot
 from zhenxun.services.cache import CacheRoot
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.db_context import Model
@@ -258,7 +258,7 @@ class GroupConsole(Model):
         group_id: str,
         channel_id: str | None = None,
         clean_duplicates: bool = True,
-    ) -> Self | None:
+    ) -> GroupSnapshot | None:
         """获取群组
 
         参数:
@@ -269,6 +269,17 @@ class GroupConsole(Model):
         返回:
             Self: GroupConsole
         """
+        _ = clean_duplicates
+        return await GroupMemoryCache.get_if_ready(group_id, channel_id)
+
+    @classmethod
+    async def get_group_db(
+        cls,
+        group_id: str,
+        channel_id: str | None = None,
+        clean_duplicates: bool = True,
+    ) -> Self | None:
+        """Return group model from database."""
         dao = DataAccess(cls)
         if channel_id:
             return await dao.safe_get_or_none(
@@ -281,6 +292,14 @@ class GroupConsole(Model):
             channel_id__isnull=True,
             clean_duplicates=clean_duplicates,
         )
+
+    @staticmethod
+    def _module_in_group(group: object, module: str, set_attr: str, raw_attr: str) -> bool:
+        block_set = getattr(group, set_attr, None)
+        if block_set is not None:
+            return module in block_set
+        raw_value = getattr(group, raw_attr, "") or ""
+        return add_disable_marker(module) in raw_value
 
     @classmethod
     async def is_super_group(cls, group_id: str) -> bool:
@@ -305,9 +324,11 @@ class GroupConsole(Model):
         返回:
             bool: 是否禁用被动
         """
-        return await cls.exists(
-            group_id=group_id,
-            superuser_block_plugin__contains=add_disable_marker(module),
+        group = await cls.get_group(group_id)
+        if not group:
+            return False
+        return cls._module_in_group(
+            group, module, "superuser_block_plugin_set", "superuser_block_plugin"
         )
 
     @classmethod
@@ -321,11 +342,13 @@ class GroupConsole(Model):
         返回:
             bool: 是否禁用插件
         """
-        module = add_disable_marker(module)
-        return await cls.exists(
-            group_id=group_id, block_plugin__contains=module
-        ) or await cls.exists(
-            group_id=group_id, superuser_block_plugin__contains=module
+        group = await cls.get_group(group_id)
+        if not group:
+            return False
+        if cls._module_in_group(group, module, "block_plugin_set", "block_plugin"):
+            return True
+        return cls._module_in_group(
+            group, module, "superuser_block_plugin_set", "superuser_block_plugin"
         )
 
     @classmethod
@@ -420,11 +443,10 @@ class GroupConsole(Model):
         返回:
             bool: 是否禁用被动
         """
-        return await cls.exists(
-            group_id=group_id,
-            channel_id=channel_id,
-            block_plugin__contains=f"<{module},",
-        )
+        group = await cls.get_group(group_id, channel_id)
+        if not group:
+            return False
+        return cls._module_in_group(group, module, "block_plugin_set", "block_plugin")
 
     @classmethod
     async def is_superuser_block_task(cls, group_id: str, task: str) -> bool:
@@ -437,9 +459,11 @@ class GroupConsole(Model):
         返回:
             bool: 是否禁用被动
         """
-        return await cls.exists(
-            group_id=group_id,
-            superuser_block_task__contains=add_disable_marker(task),
+        group = await cls.get_group(group_id)
+        if not group:
+            return False
+        return cls._module_in_group(
+            group, task, "superuser_block_task_set", "superuser_block_task"
         )
 
     @classmethod
@@ -456,23 +480,14 @@ class GroupConsole(Model):
         返回:
             bool: 是否禁用被动
         """
-        task = add_disable_marker(task)
-        if not channel_id:
-            return await cls.exists(
-                group_id=group_id,
-                channel_id__isnull=True,
-                block_task__contains=task,
-            ) or await cls.exists(
-                group_id=group_id,
-                channel_id__isnull=True,
-                superuser_block_task__contains=task,
-            )
-        return await cls.exists(
-            group_id=group_id, channel_id=channel_id, block_task__contains=task
-        ) or await cls.exists(
-            group_id=group_id,
-            channel_id__isnull=True,
-            superuser_block_task__contains=task,
+        group = await cls.get_group(group_id, channel_id)
+        if group and cls._module_in_group(group, task, "block_task_set", "block_task"):
+            return True
+        base_group = group if not channel_id else await cls.get_group(group_id)
+        if not base_group:
+            return False
+        return cls._module_in_group(
+            base_group, task, "superuser_block_task_set", "superuser_block_task"
         )
 
     @classmethod

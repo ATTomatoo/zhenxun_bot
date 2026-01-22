@@ -328,7 +328,7 @@ class GroupManager:
             operator_name = user.user_name
         else:
             operator_name = "None"
-        group = await GroupConsole.get_group(group_id)
+        group = await GroupConsole.get_group_db(group_id)
         group_name = group.group_name if group else ""
         if group:
             await group.delete()

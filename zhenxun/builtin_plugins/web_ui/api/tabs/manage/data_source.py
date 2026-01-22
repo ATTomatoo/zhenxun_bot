@@ -33,7 +33,7 @@ class ApiDataSource:
         参数:
             group: UpdateGroup
         """
-        db_group = await GroupConsole.get_group(group.group_id) or GroupConsole(
+        db_group = await GroupConsole.get_group_db(group.group_id) or GroupConsole(
             group_id=group.group_id
         )
         task_list = await TaskInfo.all().values_list("module", flat=True)

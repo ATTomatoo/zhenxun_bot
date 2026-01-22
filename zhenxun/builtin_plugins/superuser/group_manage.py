@@ -163,7 +163,7 @@ async def _(session: EventSession, arparma: Arparma, state: T_State, level: int)
 @_matcher.assign("super-handle", parameterless=[CheckGroupId()])
 async def _(session: EventSession, arparma: Arparma, state: T_State):
     gid = state["group_id"]
-    group = await GroupConsole.get_group(group_id=gid)
+    group = await GroupConsole.get_group_db(group_id=gid)
     if not group:
         await MessageUtils.build_message("群组信息不存在, 请更新群组信息...").finish()
     s = "删除" if arparma.find("delete") else "添加"
