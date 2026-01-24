@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 import time
 import traceback
@@ -50,6 +51,8 @@ def maybe_log_thread_info(
     log_new_threads: bool = False,
     include_stack: bool = True,
     stack_limit: int = 12,
+    new_thread_stack_limit: int = 24,
+    max_new_thread_stacks: int = 10,
 ) -> None:
     """Log a thread summary when count increases or at a low frequency."""
     global _LAST_LOG_TS, _LAST_COUNT, _LAST_SNAPSHOT
@@ -74,15 +77,37 @@ def maybe_log_thread_info(
     )
     current_snapshot = {t.ident: t.name for t in threads if t.ident is not None}
     if log_new_threads and delta > 0:
+        new_thread_ids = [
+            tid for tid in current_snapshot if tid not in _LAST_SNAPSHOT
+        ]
         new_threads = [
-            f"{name}(id={tid})"
-            for tid, name in current_snapshot.items()
-            if tid not in _LAST_SNAPSHOT
+            f"{current_snapshot[tid]}(id={tid})" for tid in new_thread_ids
         ]
         if new_threads:
             logger.info(
                 "[ThreadProbe] new_threads=" + ", ".join(new_threads[:30])
             )
+        if new_thread_ids:
+            frames = sys._current_frames()
+            for tid in new_thread_ids[:max_new_thread_stacks]:
+                name = current_snapshot.get(tid, "unknown")
+                frame = frames.get(tid)
+                if frame is None:
+                    logger.info(
+                        f"[ThreadProbe] thread_stack name={name} id={tid} (no frame)"
+                    )
+                    continue
+                stack = "".join(
+                    traceback.format_stack(frame, limit=new_thread_stack_limit)
+                )
+                logger.info(
+                    f"[ThreadProbe] thread_stack name={name} id={tid}\n{stack}"
+                )
+            if len(new_thread_ids) > max_new_thread_stacks:
+                logger.info(
+                    "[ThreadProbe] thread_stack truncated: "
+                    f"{len(new_thread_ids) - max_new_thread_stacks} more"
+                )
     if include_stack and delta > 0:
         stack = "".join(traceback.format_stack(limit=stack_limit))
         logger.info("[ThreadProbe] stack:\n" + stack)
