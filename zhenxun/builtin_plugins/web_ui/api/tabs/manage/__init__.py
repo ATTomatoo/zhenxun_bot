@@ -209,7 +209,7 @@ async def _(param: HandleRequest) -> Result:
         if not (req := await FgRequest.get_or_none(id=param.id)):
             return Result.warning_("未找到此Id请求...")
         if req.request_type == RequestType.GROUP:
-            if group := await GroupConsole.get_group(group_id=req.group_id):
+            if group := await GroupConsole.get_group_db(group_id=req.group_id):
                 group.group_flag = 1
                 await group.save(update_fields=["group_flag"])
             else:

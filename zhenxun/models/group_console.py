@@ -259,16 +259,16 @@ class GroupConsole(Model):
         channel_id: str | None = None,
         clean_duplicates: bool = True,
     ) -> Self | None:
-        """获取群组
+        return GroupMemoryCache.get_if_ready(group_id, channel_id)
 
-        参数:
-            group_id: 群组id
-            channel_id: 频道id
-            clean_duplicates: 是否删除重复的记录，仅保留最新的
-
-        返回:
-            Self: GroupConsole
-        """
+    @classmethod
+    async def get_group_db(
+        cls,
+        group_id: str,
+        channel_id: str | None = None,
+        clean_duplicates: bool = True,
+    ) -> Self | None:
+        """获取群组（数据库）"""
         dao = DataAccess(cls)
         if channel_id:
             return await dao.safe_get_or_none(
@@ -284,49 +284,29 @@ class GroupConsole(Model):
 
     @classmethod
     async def is_super_group(cls, group_id: str) -> bool:
-        """是否超级用户指定群
-
-        参数:
-            group_id: 群组id
-
-        返回:
-            bool: 是否超级用户指定群
-        """
-        return group.is_super if (group := await cls.get_group(group_id)) else False
+        group = GroupMemoryCache.get_if_ready(group_id, None)
+        return bool(group and group.is_super)
 
     @classmethod
     async def is_superuser_block_plugin(cls, group_id: str, module: str) -> bool:
-        """查看群组是否超级用户禁用功能
-
-        参数:
-            group_id: 群组id
-            module: 模块名称
-
-        返回:
-            bool: 是否禁用被动
-        """
-        return await cls.exists(
-            group_id=group_id,
-            superuser_block_plugin__contains=add_disable_marker(module),
+        group = GroupMemoryCache.get_if_ready(group_id, None)
+        if not group:
+            return False
+        return bool(
+            group.superuser_block_plugin_set
+            and module in group.superuser_block_plugin_set
         )
 
     @classmethod
     async def is_block_plugin(cls, group_id: str, module: str) -> bool:
-        """查看群组是否禁用插件
-
-        参数:
-            group_id: 群组id
-            plugin: 插件名称
-
-        返回:
-            bool: 是否禁用插件
-        """
-        module = add_disable_marker(module)
-        return await cls.exists(
-            group_id=group_id, block_plugin__contains=module
-        ) or await cls.exists(
-            group_id=group_id, superuser_block_plugin__contains=module
-        )
+        group = GroupMemoryCache.get_if_ready(group_id, None)
+        if not group:
+            return False
+        if group.block_plugin_set and module in group.block_plugin_set:
+            return True
+        if group.superuser_block_plugin_set and module in group.superuser_block_plugin_set:
+            return True
+        return False
 
     @classmethod
     async def set_block_plugin(
@@ -410,70 +390,44 @@ class GroupConsole(Model):
     async def is_normal_block_plugin(
         cls, group_id: str, module: str, channel_id: str | None = None
     ) -> bool:
-        """查看群组是否禁用功能
-
-        参数:
-            group_id: 群组id
-            module: 模块名称
-            channel_id: 频道id
-
-        返回:
-            bool: 是否禁用被动
-        """
-        return await cls.exists(
-            group_id=group_id,
-            channel_id=channel_id,
-            block_plugin__contains=f"<{module},",
-        )
+        group = GroupMemoryCache.get_if_ready(group_id, channel_id)
+        if not group:
+            return False
+        return bool(group.block_plugin_set and module in group.block_plugin_set)
 
     @classmethod
     async def is_superuser_block_task(cls, group_id: str, task: str) -> bool:
-        """查看群组是否超级用户禁用被动
-
-        参数:
-            group_id: 群组id
-            task: 模块名称
-
-        返回:
-            bool: 是否禁用被动
-        """
-        return await cls.exists(
-            group_id=group_id,
-            superuser_block_task__contains=add_disable_marker(task),
+        group = GroupMemoryCache.get_if_ready(group_id, None)
+        if not group:
+            return False
+        return bool(
+            group.superuser_block_task_set and task in group.superuser_block_task_set
         )
 
     @classmethod
     async def is_block_task(
         cls, group_id: str, task: str, channel_id: str | None = None
     ) -> bool:
-        """查看群组是否禁用被动
-
-        参数:
-            group_id: 群组id
-            task: 任务模块
-            channel_id: 频道id
-
-        返回:
-            bool: 是否禁用被动
-        """
-        task = add_disable_marker(task)
         if not channel_id:
-            return await cls.exists(
-                group_id=group_id,
-                channel_id__isnull=True,
-                block_task__contains=task,
-            ) or await cls.exists(
-                group_id=group_id,
-                channel_id__isnull=True,
-                superuser_block_task__contains=task,
-            )
-        return await cls.exists(
-            group_id=group_id, channel_id=channel_id, block_task__contains=task
-        ) or await cls.exists(
-            group_id=group_id,
-            channel_id__isnull=True,
-            superuser_block_task__contains=task,
-        )
+            group = GroupMemoryCache.get_if_ready(group_id, None)
+            if not group:
+                return False
+            if group.block_task_set and task in group.block_task_set:
+                return True
+            if group.superuser_block_task_set and task in group.superuser_block_task_set:
+                return True
+            return False
+        group = GroupMemoryCache.get_if_ready(group_id, channel_id)
+        if group and group.block_task_set and task in group.block_task_set:
+            return True
+        super_group = GroupMemoryCache.get_if_ready(group_id, None)
+        if (
+            super_group
+            and super_group.superuser_block_task_set
+            and task in super_group.superuser_block_task_set
+        ):
+            return True
+        return False
 
     @classmethod
     async def set_block_task(

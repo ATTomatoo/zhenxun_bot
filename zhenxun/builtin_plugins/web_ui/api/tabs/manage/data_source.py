@@ -33,7 +33,7 @@ class ApiDataSource:
         参数:
             group: UpdateGroup
         """
-        db_group = await GroupConsole.get_group(group.group_id) or GroupConsole(
+        db_group = await GroupConsole.get_group_db(group.group_id) or GroupConsole(
             group_id=group.group_id
         )
         task_list = await TaskInfo.all().values_list("module", flat=True)
@@ -250,7 +250,7 @@ class ApiDataSource:
         返回:
             GroupDetail | None: 群组详情数据
         """
-        group = await GroupConsole.get_group(group_id=group_id)
+        group = await GroupConsole.get_group_db(group_id=group_id)
         if not group:
             return None
         like_plugin = await cls.__get_group_detail_like_plugin(group_id)
