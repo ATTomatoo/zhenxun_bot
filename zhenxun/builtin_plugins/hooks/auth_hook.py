@@ -1,6 +1,7 @@
 import asyncio
 import time
 
+from nonebot import get_driver
 from nonebot.adapters import Bot, Event
 from nonebot.exception import IgnoredException
 from nonebot.matcher import Matcher
@@ -10,6 +11,7 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.services.cache.runtime_cache import is_cache_ready
 from zhenxun.services.log import logger
+from zhenxun.services.message_load import is_overloaded, signal_overload
 from zhenxun.utils.utils import get_entity_ids
 
 from .auth.config import LOGGER_COMMAND
@@ -23,6 +25,56 @@ from .auth_checker import (
 )
 
 _SKIP_AUTH_PLUGINS = {"chat_history", "chat_message"}
+_BOT_CONNECT_TS: float | None = None
+_AUTH_QUEUE_MAXSIZE = 200
+_AUTH_QUEUE_HIGH_WATER = 160
+_AUTH_OVERLOAD_WINDOW = 5.0
+_AUTH_QUEUE: asyncio.Queue[
+    tuple[Matcher, Event, Bot, Uninfo, UniMsg]
+] = asyncio.Queue(maxsize=_AUTH_QUEUE_MAXSIZE)
+_AUTH_QUEUE_STARTED = False
+_LAST_DROP_LOG = 0.0
+
+driver = get_driver()
+
+
+@driver.on_bot_connect
+async def _mark_bot_connected(bot: Bot):
+    del bot
+    global _BOT_CONNECT_TS
+    _BOT_CONNECT_TS = time.time()
+
+
+async def _auth_worker(worker_id: int) -> None:
+    while True:
+        matcher, event, bot, session, message = await _AUTH_QUEUE.get()
+        try:
+            await auth(
+                matcher,
+                event,
+                bot,
+                session,
+                message,
+                skip_ban=True,
+            )
+        except IgnoredException:
+            pass
+        except Exception as exc:
+            if not is_overloaded():
+                logger.error("async auth failed", LOGGER_COMMAND, e=exc)
+        finally:
+            _AUTH_QUEUE.task_done()
+
+
+@driver.on_startup
+async def _start_auth_queue():
+    global _AUTH_QUEUE_STARTED
+    if _AUTH_QUEUE_STARTED:
+        return
+    _AUTH_QUEUE_STARTED = True
+    worker_count = max(1, min(6, _AUTH_QUEUE_MAXSIZE // 50))
+    for idx in range(worker_count):
+        asyncio.create_task(_auth_worker(idx))
 
 
 def _skip_auth_for_plugin(matcher: Matcher) -> bool:
@@ -41,6 +93,10 @@ async def _drop_message_before_cache_ready(event: Event):
         return
     if not is_cache_ready():
         raise IgnoredException("cache not ready ignore")
+    if _BOT_CONNECT_TS is not None:
+        event_ts = getattr(event, "time", None)
+        if event_ts is not None and event_ts < _BOT_CONNECT_TS:
+            raise IgnoredException("drop backlog message")
 
 
 @run_preprocessor
@@ -66,28 +122,25 @@ async def _auth_preprocessor(
         raise IgnoredException("precheck ignore") from exc
 
     if event_cache is not None and event_cache.get("route_skip") is True:
-        logger.debug("route miss skip auth task", LOGGER_COMMAND)
+        if not is_overloaded():
+            logger.debug("route miss skip auth task", LOGGER_COMMAND)
         return
 
-    async def _run_auth_async():
-        try:
-            await auth(
-                matcher,
-                event,
-                bot,
-                session,
-                message,
-                skip_ban=True,
-            )
-        except IgnoredException:
-            return
-        except Exception as exc:
-            logger.error("async auth failed", LOGGER_COMMAND, e=exc)
-
-    asyncio.create_task(_run_auth_async())
+    try:
+        _AUTH_QUEUE.put_nowait((matcher, event, bot, session, message))
+    except asyncio.QueueFull:
+        signal_overload(_AUTH_OVERLOAD_WINDOW)
+        now = time.monotonic()
+        global _LAST_DROP_LOG
+        if now - _LAST_DROP_LOG > 1.0:
+            _LAST_DROP_LOG = now
+            logger.warning("auth queue full, skip auth task", LOGGER_COMMAND)
+        return
+    if _AUTH_QUEUE.qsize() >= _AUTH_QUEUE_HIGH_WATER:
+        signal_overload(_AUTH_OVERLOAD_WINDOW)
     now = time.monotonic()
     last_log = getattr(_auth_preprocessor, "_last_log", 0.0)
-    if now - last_log > 1.0:
+    if now - last_log > 1.0 and not is_overloaded():
         setattr(_auth_preprocessor, "_last_log", now)
         logger.debug(
             f"auth check cost: {time.time() - start_time:.3f}s",

@@ -42,6 +42,12 @@ Config.add_plugin_config(
 )
 Config.add_plugin_config(
     "hook",
+    "BAN_MEM_NEGATIVE_TTL",
+    5,
+    help="ban memory negative cache ttl seconds",
+)
+Config.add_plugin_config(
+    "hook",
     "BOT_MEM_REFRESH_INTERVAL",
     60,
     help="bot memory cache refresh seconds",
@@ -169,6 +175,34 @@ class BanEntry:
         now_ts = time.time() if now is None else now
         left = int(self.ban_time + self.duration - now_ts)
         return left if left > 0 else 0
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "group_id": self.group_id,
+            "ban_level": self.ban_level,
+            "ban_time": self.ban_time,
+            "duration": self.duration,
+            "expire_at": self.expire_at,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "BanEntry":
+        user_id = payload.get("user_id")
+        group_id = payload.get("group_id")
+        ban_time = int(payload.get("ban_time", 0) or 0)
+        duration = int(payload.get("duration", 0) or 0)
+        expire_at = payload.get("expire_at")
+        if expire_at is None and duration != -1:
+            expire_at = float(ban_time + duration)
+        return cls(
+            user_id=str(user_id) if user_id else None,
+            group_id=str(group_id) if group_id else None,
+            ban_level=int(payload.get("ban_level", 0) or 0),
+            ban_time=ban_time,
+            duration=duration,
+            expire_at=expire_at,
+        )
 
 
 @dataclass(frozen=True)
@@ -537,6 +571,8 @@ class RuntimeCacheSync:
             await BotMemoryCache.apply_sync_event(action, data)
         elif cache_type == "group":
             await GroupMemoryCache.apply_sync_event(action, data)
+        elif cache_type == "ban":
+            await BanMemoryCache.apply_sync_event(action, data)
         elif cache_type == "level":
             await LevelUserMemoryCache.apply_sync_event(action, data)
         elif cache_type == "plugin_limit":
@@ -1319,6 +1355,7 @@ class BanMemoryCache:
     _by_user: ClassVar[dict[str, BanEntry]] = {}
     _by_group: ClassVar[dict[str, BanEntry]] = {}
     _by_user_group: ClassVar[dict[tuple[str, str], BanEntry]] = {}
+    _negative: ClassVar[dict[tuple[str | None, str | None], float]] = {}
     _loaded: ClassVar[bool] = False
     _refresh_task: ClassVar[asyncio.Task | None] = None
     _cleanup_task: ClassVar[asyncio.Task | None] = None
@@ -1329,6 +1366,35 @@ class BanMemoryCache:
             return None
         value = value.strip()
         return value if value else None
+
+    @classmethod
+    def _neg_ttl(cls) -> int:
+        return _coerce_int(
+            Config.get_config("hook", "BAN_MEM_NEGATIVE_TTL", 5), 5
+        )
+
+    @classmethod
+    def _neg_key(
+        cls, user_id: str | None, group_id: str | None
+    ) -> tuple[str | None, str | None]:
+        return (cls._normalize_id(user_id), cls._normalize_id(group_id))
+
+    @classmethod
+    def _is_negative(cls, key: tuple[str | None, str | None]) -> bool:
+        expire_at = cls._negative.get(key)
+        if not expire_at:
+            return False
+        if expire_at <= time.time():
+            cls._negative.pop(key, None)
+            return False
+        return True
+
+    @classmethod
+    def _mark_negative(cls, key: tuple[str | None, str | None]) -> None:
+        ttl = cls._neg_ttl()
+        if ttl <= 0:
+            return
+        cls._negative[key] = time.time() + ttl
 
     @classmethod
     def _build_entry(cls, record) -> BanEntry | None:
@@ -1373,6 +1439,7 @@ class BanMemoryCache:
             cls._by_user = by_user
             cls._by_group = by_group
             cls._by_user_group = by_user_group
+            cls._negative = {}
             cls._loaded = True
             logger.debug(
                 "ban cache refreshed: "
@@ -1402,9 +1469,18 @@ class BanMemoryCache:
                 cls._by_user[entry.user_id] = entry
             elif entry.group_id:
                 cls._by_group[entry.group_id] = entry
+            cls._negative = {}
+        RuntimeCacheSync.publish_event("ban", "upsert", entry.to_payload())
 
     @classmethod
     async def remove(cls, user_id: str | None, group_id: str | None) -> None:
+        await cls._remove_local(user_id, group_id)
+        RuntimeCacheSync.publish_event(
+            "ban", "delete", {"user_id": user_id, "group_id": group_id}
+        )
+
+    @classmethod
+    async def _remove_local(cls, user_id: str | None, group_id: str | None) -> None:
         user_id = cls._normalize_id(user_id)
         group_id = cls._normalize_id(group_id)
         async with cls._lock:
@@ -1414,6 +1490,7 @@ class BanMemoryCache:
                 cls._by_user.pop(user_id, None)
             elif group_id:
                 cls._by_group.pop(group_id, None)
+            cls._negative = {}
 
     @classmethod
     def _get_entry(cls, user_id: str | None, group_id: str | None) -> BanEntry | None:
@@ -1434,9 +1511,32 @@ class BanMemoryCache:
         return None
 
     @classmethod
-    def remaining_time(cls, user_id: str | None, group_id: str | None) -> int:
+    def is_banned(cls, user_id: str | None, group_id: str | None) -> bool:
+        if not cls._loaded:
+            return False
+        neg_key = cls._neg_key(user_id, group_id)
+        if cls._is_negative(neg_key):
+            return False
         entry = cls._get_entry(user_id, group_id)
         if not entry:
+            cls._mark_negative(neg_key)
+            return False
+        remaining = entry.remaining()
+        if remaining == 0 and entry.duration != -1:
+            asyncio.create_task(cls.remove(entry.user_id, entry.group_id))
+            return False
+        return True
+
+    @classmethod
+    def remaining_time(cls, user_id: str | None, group_id: str | None) -> int:
+        if not cls._loaded:
+            return 0
+        neg_key = cls._neg_key(user_id, group_id)
+        if cls._is_negative(neg_key):
+            return 0
+        entry = cls._get_entry(user_id, group_id)
+        if not entry:
+            cls._mark_negative(neg_key)
             return 0
         remaining = entry.remaining()
         if remaining == 0 and entry.duration != -1:
@@ -1446,8 +1546,14 @@ class BanMemoryCache:
 
     @classmethod
     def check_ban_level(cls, user_id: str | None, group_id: str | None, level: int) -> bool:
+        if not cls._loaded:
+            return False
+        neg_key = cls._neg_key(user_id, group_id)
+        if cls._is_negative(neg_key):
+            return False
         entry = cls._get_entry(user_id, group_id)
         if not entry:
+            cls._mark_negative(neg_key)
             return False
         remaining = entry.remaining()
         if remaining == 0 and entry.duration != -1:
@@ -1476,6 +1582,8 @@ class BanMemoryCache:
                     cls._by_user.pop(entry.user_id, None)
                 elif entry.group_id:
                     cls._by_group.pop(entry.group_id, None)
+            if expired:
+                cls._negative = {}
         if not delete_db or not expired:
             return
         from tortoise.expressions import Q
@@ -1540,6 +1648,27 @@ class BanMemoryCache:
             cls._cleanup_task.cancel()
         cls._refresh_task = None
         cls._cleanup_task = None
+
+    @classmethod
+    async def upsert_from_payload(cls, payload: dict[str, Any]) -> None:
+        entry = BanEntry.from_payload(payload)
+        async with cls._lock:
+            if entry.user_id and entry.group_id:
+                cls._by_user_group[(entry.user_id, entry.group_id)] = entry
+            elif entry.user_id:
+                cls._by_user[entry.user_id] = entry
+            elif entry.group_id:
+                cls._by_group[entry.group_id] = entry
+            cls._negative = {}
+
+    @classmethod
+    async def apply_sync_event(cls, action: str, data: dict[str, Any]) -> None:
+        if action == "upsert":
+            await cls.upsert_from_payload(data)
+        elif action == "delete":
+            await cls._remove_local(data.get("user_id"), data.get("group_id"))
+        elif action == "refresh":
+            await cls.refresh()
 
 
 @PriorityLifecycle.on_startup(priority=6)

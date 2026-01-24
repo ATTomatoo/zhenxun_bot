@@ -25,6 +25,7 @@ from zhenxun.services.cache.runtime_cache import (
 from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
+from zhenxun.services.message_load import is_overloaded
 from zhenxun.utils.enum import BlockType, GoldHandle, PluginType
 from zhenxun.utils.exception import InsufficientGold
 from zhenxun.utils.platform import PlatformUtils
@@ -171,6 +172,12 @@ def _cache_set(cache: CacheDict | None, key: str, value):
         cache[key] = value
 
 
+def _debug_log(message: str, *args, **kwargs) -> None:
+    if is_overloaded():
+        return
+    logger.debug(message, *args, **kwargs)
+
+
 def _event_cache_key(event: Event, session: Uninfo, entity) -> str:
     msg_id = getattr(event, "message_id", None)
     if msg_id is None:
@@ -307,9 +314,7 @@ async def _db_section():
     await DB_SEMAPHORE.acquire()
     async with DB_ACTIVE_LOCK:
         DB_ACTIVE_COUNT += 1
-        logger.debug(
-            f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND
-        )
+        _debug_log(f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND)
     try:
         yield
     finally:
@@ -317,7 +322,7 @@ async def _db_section():
             DB_SEMAPHORE.release()
         async with DB_ACTIVE_LOCK:
             DB_ACTIVE_COUNT = max(DB_ACTIVE_COUNT - 1, 0)
-            logger.debug(
+            _debug_log(
                 f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND
             )
 
@@ -620,7 +625,7 @@ async def _enter_hooks_section():
     await HOOKS_SEMAPHORE.acquire()
     async with HOOKS_ACTIVE_LOCK:
         HOOKS_ACTIVE_COUNT += 1
-        logger.debug(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
+        _debug_log(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
 
 
 async def _leave_hooks_section():
@@ -634,7 +639,7 @@ async def _leave_hooks_section():
         HOOKS_ACTIVE_COUNT -= 1
         # 保证计数不为负
         HOOKS_ACTIVE_COUNT = max(HOOKS_ACTIVE_COUNT, 0)
-        logger.debug(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
+        _debug_log(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
 
 
 async def auth_ban_fast(

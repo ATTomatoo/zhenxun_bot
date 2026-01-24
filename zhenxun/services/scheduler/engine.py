@@ -10,6 +10,7 @@ from collections.abc import Callable
 from datetime import datetime
 from functools import partial
 import random
+import time
 
 import nonebot
 from nonebot.adapters import Bot
@@ -23,6 +24,7 @@ from pydantic import BaseModel
 from zhenxun.configs.config import Config
 from zhenxun.models.scheduled_job import ScheduledJob
 from zhenxun.services.log import logger
+from zhenxun.services.message_load import should_pause_tasks
 from zhenxun.utils.common_utils import CommonUtils
 from zhenxun.utils.decorator.retry import Retry
 from zhenxun.utils.pydantic_compat import parse_as
@@ -32,6 +34,7 @@ from .types import ExecutionPolicy, ScheduleContext
 
 JOB_PREFIX = "zhenxun_schedule_"
 SCHEDULE_CONCURRENCY_KEY = "all_groups_concurrency_limit"
+_LAST_PRESSURE_SKIP = 0.0
 
 
 class APSchedulerAdapter:
@@ -360,6 +363,14 @@ async def _execute_job(
 
     if schedule_id is None:
         logger.error("执行持久化任务时 schedule_id 不能为空。")
+        return
+
+    global _LAST_PRESSURE_SKIP
+    if should_pause_tasks():
+        now = time.time()
+        if now - _LAST_PRESSURE_SKIP > 30:
+            _LAST_PRESSURE_SKIP = now
+            logger.info("scheduler paused due to message pressure")
         return
 
     scheduler_manager._running_tasks.add(schedule_id)
