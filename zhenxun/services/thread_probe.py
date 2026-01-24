@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 import threading
 import time
@@ -20,6 +21,10 @@ _THREAD_START_PATCHED = False
 _THREAD_START_STACK_LIMIT = 24
 _THREAD_START_LOG_ALL = True
 _THREAD_START_NAME_PREFIXES = ("AnyIO worker thread", "ThreadPoolExecutor")
+_RUN_SYNC_PATCHED = False
+_RUN_SYNC_LOG_MIN_INTERVAL = 0.0
+_RUN_SYNC_LOG_STACK_LIMIT = 0
+_LAST_RUN_SYNC_LOG_TS = 0.0
 
 
 def _bucket_name(name: str) -> str:
@@ -64,6 +69,68 @@ def _patch_thread_start() -> None:
 
     threading.Thread.start = _patched_start  # type: ignore[assignment]
     _THREAD_START_PATCHED = True
+
+
+def _log_run_sync(func: object) -> None:
+    global _LAST_RUN_SYNC_LOG_TS
+    now = time.monotonic()
+    if _RUN_SYNC_LOG_MIN_INTERVAL > 0 and now - _LAST_RUN_SYNC_LOG_TS < _RUN_SYNC_LOG_MIN_INTERVAL:
+        return
+    _LAST_RUN_SYNC_LOG_TS = now
+    name = getattr(func, "__qualname__", None) or getattr(func, "__name__", None)
+    if not name:
+        name = repr(func)
+    module = getattr(func, "__module__", "")
+    location = ""
+    try:
+        src_file = inspect.getsourcefile(func) or inspect.getfile(func)
+        _, src_line = inspect.getsourcelines(func)
+        location = f" {src_file}:{src_line}"
+    except Exception:
+        location = ""
+    logger.info(f"[ThreadProbe] run_sync call {module}:{name}{location}")
+    if _RUN_SYNC_LOG_STACK_LIMIT > 0:
+        stack = "".join(traceback.format_stack(limit=_RUN_SYNC_LOG_STACK_LIMIT))
+        logger.info("[ThreadProbe] run_sync stack:\n" + stack)
+
+
+def _wrap_run_sync(func):  # type: ignore[no-untyped-def]
+    def _wrapped(callable_obj):  # type: ignore[no-untyped-def]
+        _log_run_sync(callable_obj)
+        return func(callable_obj)
+
+    return _wrapped
+
+
+def _patch_run_sync() -> None:
+    global _RUN_SYNC_PATCHED
+    if _RUN_SYNC_PATCHED:
+        return
+    try:
+        import nonebot.utils as nb_utils
+    except Exception:
+        nb_utils = None
+    if nb_utils and hasattr(nb_utils, "run_sync"):
+        original = nb_utils.run_sync
+        wrapped = _wrap_run_sync(original)
+        nb_utils.run_sync = wrapped  # type: ignore[assignment]
+        try:
+            import nonebot.dependencies as nb_deps
+            if getattr(nb_deps, "run_sync", None) is original:
+                nb_deps.run_sync = wrapped  # type: ignore[assignment]
+            elif hasattr(nb_deps, "run_sync"):
+                nb_deps.run_sync = _wrap_run_sync(nb_deps.run_sync)  # type: ignore[assignment]
+        except Exception:
+            pass
+        try:
+            import nonebot.internal.rule as nb_rule
+            if getattr(nb_rule, "run_sync", None) is original:
+                nb_rule.run_sync = wrapped  # type: ignore[assignment]
+            elif hasattr(nb_rule, "run_sync"):
+                nb_rule.run_sync = _wrap_run_sync(nb_rule.run_sync)  # type: ignore[assignment]
+        except Exception:
+            pass
+    _RUN_SYNC_PATCHED = True
 
 
 def log_all_threads(reason: str) -> None:
@@ -162,6 +229,7 @@ async def _periodic_log() -> None:
 
 
 _patch_thread_start()
+_patch_run_sync()
 driver = nonebot.get_driver()
 
 
