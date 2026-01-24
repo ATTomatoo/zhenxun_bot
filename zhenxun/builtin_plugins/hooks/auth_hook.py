@@ -107,7 +107,8 @@ async def _auth_preprocessor(
     if event.get_type() == "message" and not is_cache_ready():
         raise IgnoredException("cache not ready ignore")
     if event.get_type() == "message":
-        maybe_log_thread_info("message")
+        plugin_name = matcher.plugin_name or "unknown"
+        maybe_log_thread_info(f"pre:{plugin_name}")
     if _skip_auth_for_plugin(matcher):
         return
     start_time = time.time()
@@ -166,3 +167,10 @@ async def _unblock_after_matcher(matcher: Matcher, session: Uninfo):
     if user_id and matcher.plugin:
         module = matcher.plugin.name
         LimitManager.unblock(module, user_id, group_id, channel_id)
+    plugin_name = matcher.plugin_name or "unknown"
+    maybe_log_thread_info(
+        f"post:{plugin_name}",
+        min_interval=1.0,
+        log_new_threads=True,
+        include_stack=False,
+    )

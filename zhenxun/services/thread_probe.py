@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+import traceback
 from collections import Counter
 
 import nonebot
@@ -11,6 +12,7 @@ from zhenxun.services.log import logger
 
 _LAST_LOG_TS = 0.0
 _LAST_COUNT = 0
+_LAST_SNAPSHOT: dict[int, str] = {}
 _PERIODIC_TASK: asyncio.Task | None = None
 _INTERVAL_SECONDS = 20.0
 
@@ -25,7 +27,7 @@ def _bucket_name(name: str) -> str:
 
 
 def log_all_threads(reason: str) -> None:
-    global _LAST_LOG_TS, _LAST_COUNT
+    global _LAST_LOG_TS, _LAST_COUNT, _LAST_SNAPSHOT
     threads = threading.enumerate()
     parts = []
     for t in threads:
@@ -35,6 +37,7 @@ def log_all_threads(reason: str) -> None:
     logger.info(
         f"[ThreadProbe] reason={reason} total={len(threads)}\n" + "\n".join(parts)
     )
+    _LAST_SNAPSHOT = {t.ident: t.name for t in threads if t.ident is not None}
     _LAST_LOG_TS = time.monotonic()
     _LAST_COUNT = len(threads)
 
@@ -44,9 +47,12 @@ def maybe_log_thread_info(
     *,
     force: bool = False,
     min_interval: float = 10.0,
+    log_new_threads: bool = False,
+    include_stack: bool = False,
+    stack_limit: int = 8,
 ) -> None:
     """Log a thread summary when count increases or at a low frequency."""
-    global _LAST_LOG_TS, _LAST_COUNT
+    global _LAST_LOG_TS, _LAST_COUNT, _LAST_SNAPSHOT
     now = time.monotonic()
     threads = threading.enumerate()
     count = len(threads)
@@ -66,6 +72,21 @@ def maybe_log_thread_info(
         f"[ThreadProbe] reason={reason} total={count} delta={delta} "
         f"alive={alive} daemon={daemon} buckets={top}"
     )
+    current_snapshot = {t.ident: t.name for t in threads if t.ident is not None}
+    if log_new_threads and delta > 0:
+        new_threads = [
+            f"{name}(id={tid})"
+            for tid, name in current_snapshot.items()
+            if tid not in _LAST_SNAPSHOT
+        ]
+        if new_threads:
+            logger.info(
+                "[ThreadProbe] new_threads=" + ", ".join(new_threads[:30])
+            )
+    if include_stack and delta > 0:
+        stack = "".join(traceback.format_stack(limit=stack_limit))
+        logger.info("[ThreadProbe] stack:\n" + stack)
+    _LAST_SNAPSHOT = current_snapshot
     _LAST_LOG_TS = now
     _LAST_COUNT = count
 
