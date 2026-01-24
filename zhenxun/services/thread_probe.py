@@ -48,8 +48,8 @@ def maybe_log_thread_info(
     force: bool = False,
     min_interval: float = 10.0,
     log_new_threads: bool = False,
-    include_stack: bool = False,
-    stack_limit: int = 8,
+    include_stack: bool = True,
+    stack_limit: int = 12,
 ) -> None:
     """Log a thread summary when count increases or at a low frequency."""
     global _LAST_LOG_TS, _LAST_COUNT, _LAST_SNAPSHOT
