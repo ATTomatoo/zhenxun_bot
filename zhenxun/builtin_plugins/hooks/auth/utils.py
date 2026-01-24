@@ -46,6 +46,7 @@ async def send_message(
         message: 消息
         check_tag: cd flag
     """
+
     async def _send():
         try:
             if not check_tag:

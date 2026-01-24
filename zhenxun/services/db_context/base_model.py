@@ -153,6 +153,7 @@ class Model(TortoiseModel):
         if cache_type := cls.get_cache_type():
             await CacheRoot.invalidate_cache(cache_type, cls.get_cache_key(result[0]))
         return result
+
     @classmethod
     async def update_or_create(
         cls,
