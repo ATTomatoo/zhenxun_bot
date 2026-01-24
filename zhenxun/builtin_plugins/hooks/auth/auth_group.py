@@ -2,6 +2,7 @@ import time
 
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
+from zhenxun.services.cache.runtime_cache import GroupSnapshot
 from zhenxun.services.log import logger
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD, SwitchEnum
@@ -10,7 +11,7 @@ from .exception import SkipPluginException
 
 async def auth_group(
     plugin: PluginInfo,
-    group: GroupConsole | None,
+    group: GroupConsole | GroupSnapshot | None,
     text: str | None,
     group_id: str | None,
 ):

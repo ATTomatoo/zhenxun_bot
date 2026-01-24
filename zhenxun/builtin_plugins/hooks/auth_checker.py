@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import time
+from typing import cast
 
 from nonebot import get_loaded_plugins
 from nonebot.adapters import Bot, Event
@@ -16,8 +17,11 @@ from zhenxun.models.user_console import UserConsole
 from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.cache.runtime_cache import (
     BotMemoryCache,
+    BotSnapshot,
     GroupMemoryCache,
+    GroupSnapshot,
     LevelUserMemoryCache,
+    LevelUserSnapshot,
     PluginInfoMemoryCache,
 )
 from zhenxun.services.data_access import DataAccess
@@ -298,14 +302,14 @@ async def _get_route_context(text: str, event_cache: dict | None) -> set[str]:
 
 
 async def _has_limits_cached(module: str, event_cache: dict | None) -> bool:
+    module_limit_cache: dict[str, bool] = {}
     if event_cache is not None:
         module_limit_cache = event_cache.setdefault("module_limits", {})
-        if module in module_limit_cache:
-            return module_limit_cache[module]
+    if module in module_limit_cache:
+        return module_limit_cache[module]
     limits = await LimitManager.get_module_limits(module)
     has_limits = bool(limits)
-    if event_cache is not None:
-        module_limit_cache[module] = has_limits
+    module_limit_cache[module] = has_limits
     return has_limits
 
 @contextlib.asynccontextmanager
@@ -327,7 +331,9 @@ async def _db_section():
             )
 
 
-async def _get_group_cached(entity, event_cache):
+async def _get_group_cached(
+    entity, event_cache
+) -> GroupSnapshot | None:
     if not entity.group_id:
         return None
     if event_cache is not None and "group" in event_cache:
@@ -384,7 +390,9 @@ def _needs_admin_check(plugin: PluginInfo) -> bool:
     }
 
 
-async def _get_bot_data_cached(bot_id: str, event_cache):
+async def _get_bot_data_cached(
+    bot_id: str, event_cache
+) -> tuple[BotSnapshot | None, bool]:
     if event_cache is not None and "bot_data" in event_cache:
         return event_cache.get("bot_data"), event_cache.get("bot_timeout", False)
     bot = await BotMemoryCache.get(bot_id)
@@ -394,7 +402,9 @@ async def _get_bot_data_cached(bot_id: str, event_cache):
     return bot, False
 
 
-async def _get_admin_levels_cached(session: Uninfo, entity, event_cache):
+async def _get_admin_levels_cached(
+    session: Uninfo, entity, event_cache
+) -> tuple[tuple[LevelUserSnapshot | None, LevelUserSnapshot | None] | None, bool]:
     if event_cache is not None and "admin_levels" in event_cache:
         return event_cache.get("admin_levels"), event_cache.get("admin_timeout", False)
     levels = await LevelUserMemoryCache.get_levels(session.user.id, entity.group_id)
@@ -508,6 +518,7 @@ async def get_plugin_and_user(
         plugin = await PluginInfoMemoryCache.get_by_module(module)
         if event_cache is not None:
             event_cache.setdefault("plugin_cache", {})[module] = plugin
+    plugin = cast(PluginInfo | None, plugin)
 
     if not plugin:
         raise PermissionExemption(
@@ -707,7 +718,9 @@ async def auth_precheck(
     if session.user.id in bot.config.superusers:
         return
 
-    plugin = await PluginInfoMemoryCache.get_by_module(module)
+    plugin = cast(
+        PluginInfo | None, await PluginInfoMemoryCache.get_by_module(module)
+    )
     if not plugin:
         return
 

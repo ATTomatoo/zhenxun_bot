@@ -2,7 +2,7 @@ import time
 
 from zhenxun.models.bot_console import BotConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.cache.runtime_cache import BotMemoryCache
+from zhenxun.services.cache.runtime_cache import BotMemoryCache, BotSnapshot
 from zhenxun.services.log import logger
 from zhenxun.utils.common_utils import CommonUtils
 
@@ -13,7 +13,7 @@ from .exception import SkipPluginException
 async def auth_bot(
     plugin: PluginInfo,
     bot_id: str,
-    bot_data: BotConsole | None = None,
+    bot_data: BotConsole | BotSnapshot | None = None,
     skip_fetch: bool = False,
 ):
     """bot层面的权限检查
@@ -29,7 +29,7 @@ async def auth_bot(
     start_time = time.time()
 
     try:
-        bot: BotConsole | None = bot_data
+        bot: BotConsole | BotSnapshot | None = bot_data
         if bot is None and not skip_fetch:
             bot = await BotMemoryCache.get(bot_id)
 
