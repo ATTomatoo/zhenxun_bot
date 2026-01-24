@@ -72,6 +72,18 @@ _t = on_message(priority=999, block=False, rule=lambda: False)
 
 
 cache = CacheRoot.cache_dict("REQUEST_CACHE", 60, str)
+_API_TIMEOUT = 5.0
+
+
+async def _safe_get_group_info(bot, group_id: str):
+    try:
+        return await asyncio.wait_for(
+            bot.get_group_info(group_id=group_id),
+            timeout=_API_TIMEOUT,
+        )
+    except (asyncio.TimeoutError, ActionFailed, Exception) as e:
+        logger.warning("获取群信息失败", "群邀请", e=e)
+        return None
 
 
 @friend_req.handle()
@@ -162,17 +174,16 @@ async def _(bot: v12Bot | v11Bot, event: GroupRequestEvent, session: EventSessio
             await bot.set_group_add_request(
                 flag=event.flag, sub_type="invite", approve=True
             )
-            if isinstance(bot, v11Bot):
-                group_info = await bot.get_group_info(group_id=event.group_id)
-                max_member_count = group_info["max_member_count"]
-                member_count = group_info["member_count"]
+            group_info = await _safe_get_group_info(bot, str(event.group_id))
+            if isinstance(bot, v11Bot) and group_info:
+                max_member_count = group_info.get("max_member_count", 0)
+                member_count = group_info.get("member_count", 0)
             else:
-                group_info = await bot.get_group_info(group_id=str(event.group_id))
                 max_member_count = 0
                 member_count = 0
             group.max_member_count = max_member_count
             group.member_count = member_count
-            group.group_name = group_info["group_name"]
+            group.group_name = group_info.get("group_name", "") if group_info else ""
             await group.save(
                 update_fields=["group_name", "max_member_count", "member_count"]
             )

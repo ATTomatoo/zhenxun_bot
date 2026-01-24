@@ -14,6 +14,7 @@ from zhenxun.utils.utils import FreqLimiter
 from .config import LOGGER_COMMAND
 
 base_config = Config.get("hook")
+_SEND_TASKS: set[asyncio.Task] = set()
 
 
 def is_poke(event: Event) -> bool:
@@ -61,7 +62,9 @@ async def send_message(
             )
 
     if background:
-        asyncio.create_task(_send())
+        task = asyncio.create_task(_send())
+        _SEND_TASKS.add(task)
+        task.add_done_callback(_SEND_TASKS.discard)
         return
     await _send()
 

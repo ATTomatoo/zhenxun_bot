@@ -35,6 +35,8 @@ WELCOME_PATH = DATA_PATH / "welcome_message"
 DEFAULT_IMAGE_PATH = IMAGE_PATH / "qxz"
 
 _API_SEMAPHORE = asyncio.Semaphore(4)
+_API_TIMEOUT = 5.0
+_REFRESH_TASKS: set[asyncio.Task] = set()
 
 
 async def _safe_get_group_member_info(
@@ -42,14 +44,27 @@ async def _safe_get_group_member_info(
 ) -> dict:
     async with _API_SEMAPHORE:
         try:
-            return await bot.get_group_member_info(
-                group_id=int(group_id), user_id=int(user_id), no_cache=True
+            return await asyncio.wait_for(
+                bot.get_group_member_info(
+                    group_id=int(group_id), user_id=int(user_id), no_cache=True
+                ),
+                timeout=_API_TIMEOUT,
             )
-        except ActionFailed as e:
-            logger.warning("获取用户信息识别...", e=e)
+        except (asyncio.TimeoutError, ActionFailed, Exception) as e:
+            logger.warning("获取用户信息失败", e=e)
             return {"user_id": user_id, "group_id": group_id, "nickname": ""}
 
 
+async def _safe_get_group_info(bot: Bot, group_id: str) -> dict | None:
+    async with _API_SEMAPHORE:
+        try:
+            return await asyncio.wait_for(
+                bot.get_group_info(group_id=group_id),
+                timeout=_API_TIMEOUT,
+            )
+        except (asyncio.TimeoutError, ActionFailed, Exception) as e:
+            logger.warning("获取群信息失败", e=e)
+            return None
 async def _refresh_member_info_async(
     bot: Bot, group_id: str, user_id: str, platform: str | None
 ) -> None:
@@ -87,7 +102,14 @@ class GroupManager:
             if plugin_list := await PluginInfo.filter(default_status=False).all():
                 for plugin in plugin_list:
                     block_plugin += f"<{plugin.module},"
-            group_info = await bot.get_group_info(group_id=group_id)
+            group_info = await _safe_get_group_info(bot, group_id)
+            if not group_info:
+                logger.warning(
+                    "获取群信息失败，跳过群信息写入",
+                    "入群检测",
+                    group_id=group_id,
+                )
+                return
             await GroupConsole.update_or_create(
                 group_id=group_info["group_id"],
                 defaults={
@@ -302,11 +324,13 @@ class GroupManager:
                 "platform": session.platform,
             },
         )
-        asyncio.create_task(
+        task = asyncio.create_task(
             _refresh_member_info_async(
                 bot, str(group_id), str(user_id), session.platform
             )
         )
+        _REFRESH_TASKS.add(task)
+        task.add_done_callback(_REFRESH_TASKS.discard)
         logger.info(f"用户{user_id} 所属{group_id} 更新成功")
         if not await CommonUtils.task_is_block(
             session, "group_welcome"

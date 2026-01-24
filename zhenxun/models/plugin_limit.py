@@ -1,7 +1,7 @@
 from tortoise import fields
 
-from zhenxun.services.db_context import Model
 from zhenxun.services.cache.runtime_cache import PluginLimitMemoryCache
+from zhenxun.services.db_context import Model
 from zhenxun.utils.enum import LimitCheckType, LimitWatchType, PluginLimitType
 
 

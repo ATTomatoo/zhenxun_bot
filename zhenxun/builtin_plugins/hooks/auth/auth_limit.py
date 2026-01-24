@@ -35,6 +35,7 @@ Config.add_plugin_config(
 )
 _LIMIT_NOTICE_CD = int(Config.get_config("hook", "AUTH_LIMIT_NOTICE_CD", 2) or 2)
 _LIMIT_NOTICE_LIMITER = FreqLimiter(_LIMIT_NOTICE_CD)
+_LIMIT_NOTICE_TASKS: set[asyncio.Task] = set()
 
 
 @PriorityLifecycle.on_startup(priority=5)
@@ -76,7 +77,9 @@ def _send_limit_notice(message: str, format_kwargs: dict[str, Any], key: str) ->
         except Exception as exc:
             logger.error("limit notice send failed", LOGGER_COMMAND, e=exc)
 
-    asyncio.create_task(_send())
+    task = asyncio.create_task(_send())
+    _LIMIT_NOTICE_TASKS.add(task)
+    task.add_done_callback(_LIMIT_NOTICE_TASKS.discard)
 
 
 class LimitManager:

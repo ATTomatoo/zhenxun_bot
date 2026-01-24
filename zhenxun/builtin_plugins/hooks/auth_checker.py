@@ -11,20 +11,18 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.configs.config import Config
 from zhenxun.configs.utils import PluginExtraData
-from zhenxun.models.bot_console import BotConsole
-from zhenxun.models.group_console import GroupConsole
-from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
+from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.cache.runtime_cache import (
     BotMemoryCache,
     GroupMemoryCache,
     LevelUserMemoryCache,
     PluginInfoMemoryCache,
 )
-from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
+from zhenxun.services.message_load import is_overloaded
 from zhenxun.utils.enum import BlockType, GoldHandle, PluginType
 from zhenxun.utils.exception import InsufficientGold
 from zhenxun.utils.platform import PlatformUtils
@@ -171,6 +169,12 @@ def _cache_set(cache: CacheDict | None, key: str, value):
         cache[key] = value
 
 
+def _debug_log(message: str, *args, **kwargs) -> None:
+    if is_overloaded():
+        return
+    logger.debug(message, *args, **kwargs)
+
+
 def _event_cache_key(event: Event, session: Uninfo, entity) -> str:
     msg_id = getattr(event, "message_id", None)
     if msg_id is None:
@@ -180,7 +184,10 @@ def _event_cache_key(event: Event, session: Uninfo, entity) -> str:
     platform = PlatformUtils.get_platform(session)
     group_id = entity.group_id or ""
     channel_id = entity.channel_id or ""
-    return f"{platform}:{session.self_id}:{entity.user_id}:{group_id}:{channel_id}:{msg_id}"
+    return (
+        f"{platform}:{session.self_id}:{entity.user_id}:"
+        f"{group_id}:{channel_id}:{msg_id}"
+    )
 
 
 def _get_event_cache(event: Event, session: Uninfo, entity):
@@ -307,9 +314,7 @@ async def _db_section():
     await DB_SEMAPHORE.acquire()
     async with DB_ACTIVE_LOCK:
         DB_ACTIVE_COUNT += 1
-        logger.debug(
-            f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND
-        )
+        _debug_log(f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND)
     try:
         yield
     finally:
@@ -317,7 +322,7 @@ async def _db_section():
             DB_SEMAPHORE.release()
         async with DB_ACTIVE_LOCK:
             DB_ACTIVE_COUNT = max(DB_ACTIVE_COUNT - 1, 0)
-            logger.debug(
+            _debug_log(
                 f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND
             )
 
@@ -620,7 +625,7 @@ async def _enter_hooks_section():
     await HOOKS_SEMAPHORE.acquire()
     async with HOOKS_ACTIVE_LOCK:
         HOOKS_ACTIVE_COUNT += 1
-        logger.debug(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
+        _debug_log(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
 
 
 async def _leave_hooks_section():
@@ -634,7 +639,7 @@ async def _leave_hooks_section():
         HOOKS_ACTIVE_COUNT -= 1
         # 保证计数不为负
         HOOKS_ACTIVE_COUNT = max(HOOKS_ACTIVE_COUNT, 0)
-        logger.debug(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
+        _debug_log(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
 
 
 async def auth_ban_fast(
@@ -661,6 +666,29 @@ async def auth_ban_fast(
         event_cache["ban_state"] = False
 
 
+async def route_precheck(
+    matcher: Matcher,
+    event: Event,
+    session: Uninfo,
+    message: UniMsg,
+) -> bool:
+    module = matcher.plugin_name or ""
+    if not module:
+        return False
+    if _is_hidden_plugin(matcher):
+        return False
+    entity = get_entity_ids(session)
+    event_cache = _get_event_cache(event, session, entity)
+    text = _get_message_text(message, event_cache)
+    route_modules = await _get_route_context(text, event_cache)
+    await _ensure_route_index()
+    if module in _ROUTE_MODULES_WITH_COMMANDS and module not in route_modules:
+        if event_cache is not None:
+            event_cache["route_skip"] = True
+        return True
+    return False
+
+
 async def auth_precheck(
     matcher: Matcher,
     event: Event,
@@ -675,14 +703,6 @@ async def auth_precheck(
     if _is_hidden_plugin(matcher):
         return
     entity = get_entity_ids(session)
-    event_cache = _get_event_cache(event, session, entity)
-    text = _get_message_text(message, event_cache)
-    route_modules = await _get_route_context(text, event_cache)
-    await _ensure_route_index()
-    if module in _ROUTE_MODULES_WITH_COMMANDS and module not in route_modules:
-        if event_cache is not None:
-            event_cache["route_skip"] = True
-        return
 
     if session.user.id in bot.config.superusers:
         return

@@ -21,7 +21,7 @@ from typing import (
     get_origin,
     get_type_hints,
 )
-from typing_extensions import override
+from typing_extensions import Self, override
 
 from httpx import NetworkError, TimeoutException
 
@@ -421,7 +421,7 @@ class ToolProviderManager:
 
     _instance: "ToolProviderManager | None" = None
 
-    def __new__(cls) -> "ToolProviderManager":
+    def __new__(cls) -> Self:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance

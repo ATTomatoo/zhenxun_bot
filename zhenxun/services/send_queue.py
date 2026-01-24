@@ -16,6 +16,7 @@ _LAST_SEND_TS = 0.0
 _API_SEMAPHORE = asyncio.Semaphore(3)
 _ORIG_CALL_API = Bot.call_api
 _PATCHED = False
+_WORKER_TASKS: list[asyncio.Task] = []
 
 
 async def _rate_limit():
@@ -74,4 +75,4 @@ driver = nonebot.get_driver()
 async def _start_send_queue():
     patch_send_queue()
     for idx in range(_WORKERS):
-        asyncio.create_task(_worker(idx))
+        _WORKER_TASKS.append(asyncio.create_task(_worker(idx)))

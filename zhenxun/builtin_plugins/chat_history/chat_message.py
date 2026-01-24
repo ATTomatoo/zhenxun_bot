@@ -52,7 +52,7 @@ def _is_command_like(text: str) -> bool:
     return False
 
 
-def rule(event: Event, message: UniMsg, session: Uninfo) -> bool:
+async def rule(event: Event, message: UniMsg, session: Uninfo) -> bool:
     if not Config.get_config("chat_history", "FLAG"):
         return False
     if not message:
