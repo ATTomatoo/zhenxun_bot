@@ -5,7 +5,11 @@ from typing import Any, ClassVar
 from typing_extensions import Self
 
 from tortoise.backends.base.client import BaseDBAsyncClient
-from tortoise.exceptions import IntegrityError, MultipleObjectsReturned
+from tortoise.exceptions import (
+    IntegrityError,
+    MultipleObjectsReturned,
+    TransactionManagementError,
+)
 from tortoise.models import Model as TortoiseModel
 from tortoise.transactions import in_transaction
 
@@ -129,13 +133,26 @@ class Model(TortoiseModel):
         **kwargs: Any,
     ) -> tuple[Self, bool]:
         """获取或创建数据（无锁版本，依赖数据库约束）"""
-        result = await super().get_or_create(
-            defaults=defaults, using_db=using_db, **kwargs
-        )
+        try:
+            result = await super().get_or_create(
+                defaults=defaults, using_db=using_db, **kwargs
+            )
+        except IntegrityError:
+            # 并发创建冲突时，回退为查询已存在记录
+            try:
+                if using_db is not None:
+                    obj = await cls.filter(**kwargs).using_db(using_db).get()
+                    result = (obj, False)
+                else:
+                    raise TransactionManagementError("fallback to new transaction")
+            except TransactionManagementError:
+                async with in_transaction() as connection:
+                    obj = await cls.filter(**kwargs).using_db(connection).get()
+                    result = (obj, False)
+
         if cache_type := cls.get_cache_type():
             await CacheRoot.invalidate_cache(cache_type, cls.get_cache_key(result[0]))
         return result
-
     @classmethod
     async def update_or_create(
         cls,
