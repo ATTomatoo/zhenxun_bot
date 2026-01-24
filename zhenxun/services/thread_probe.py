@@ -16,6 +16,10 @@ _LAST_COUNT = 0
 _LAST_SNAPSHOT: dict[int, str] = {}
 _PERIODIC_TASK: asyncio.Task | None = None
 _INTERVAL_SECONDS = 20.0
+_THREAD_START_PATCHED = False
+_THREAD_START_STACK_LIMIT = 24
+_THREAD_START_LOG_ALL = True
+_THREAD_START_NAME_PREFIXES = ("AnyIO worker thread", "ThreadPoolExecutor")
 
 
 def _bucket_name(name: str) -> str:
@@ -25,6 +29,41 @@ def _bucket_name(name: str) -> str:
         if sep in name:
             return name.split(sep, 1)[0]
     return name
+
+
+def _should_log_thread_start(name: str) -> bool:
+    if _THREAD_START_LOG_ALL:
+        return True
+    if not name:
+        return False
+    return any(name.startswith(prefix) for prefix in _THREAD_START_NAME_PREFIXES)
+
+
+def _patch_thread_start() -> None:
+    global _THREAD_START_PATCHED
+    if _THREAD_START_PATCHED:
+        return
+    original_start = threading.Thread.start
+
+    def _patched_start(self: threading.Thread, *args, **kwargs):  # type: ignore[no-untyped-def]
+        stack_text = None
+        try:
+            if _should_log_thread_start(self.name):
+                stack_text = "".join(
+                    traceback.format_stack(limit=_THREAD_START_STACK_LIMIT)
+                )
+        except Exception:
+            stack_text = None
+        result = original_start(self, *args, **kwargs)
+        if stack_text:
+            logger.info(
+                f"[ThreadProbe] thread_start name={self.name} id={self.ident}\n"
+                f"{stack_text}"
+            )
+        return result
+
+    threading.Thread.start = _patched_start  # type: ignore[assignment]
+    _THREAD_START_PATCHED = True
 
 
 def log_all_threads(reason: str) -> None:
@@ -122,6 +161,7 @@ async def _periodic_log() -> None:
         log_all_threads("periodic")
 
 
+_patch_thread_start()
 driver = nonebot.get_driver()
 
 
