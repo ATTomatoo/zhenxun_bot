@@ -12,6 +12,7 @@ from nonebot_plugin_uninfo import Uninfo
 from zhenxun.services.cache.runtime_cache import is_cache_ready
 from zhenxun.services.log import logger
 from zhenxun.services.message_load import is_overloaded, signal_overload
+from zhenxun.services.thread_probe import maybe_log_thread_info
 from zhenxun.utils.utils import get_entity_ids
 
 from .auth.config import LOGGER_COMMAND
@@ -105,6 +106,8 @@ async def _auth_preprocessor(
 ):
     if event.get_type() == "message" and not is_cache_ready():
         raise IgnoredException("cache not ready ignore")
+    if event.get_type() == "message":
+        maybe_log_thread_info("message")
     if _skip_auth_for_plugin(matcher):
         return
     start_time = time.time()
@@ -135,6 +138,7 @@ async def _auth_preprocessor(
         if now - _LAST_DROP_LOG > 1.0:
             _LAST_DROP_LOG = now
             logger.warning("auth queue full, skip auth task", LOGGER_COMMAND)
+        maybe_log_thread_info("auth_queue_full", force=True, min_interval=1.0)
         return
     if _AUTH_QUEUE.qsize() >= _AUTH_QUEUE_HIGH_WATER:
         signal_overload(_AUTH_OVERLOAD_WINDOW)
