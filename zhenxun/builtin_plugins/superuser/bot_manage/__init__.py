@@ -3,14 +3,13 @@ from typing import cast
 import nonebot
 from nonebot.adapters import Bot
 from nonebot.plugin import PluginMetadata
+from tortoise.exceptions import IntegrityError, TransactionManagementError
+from tortoise.transactions import in_transaction
 
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.models.bot_console import BotConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
-from tortoise.exceptions import IntegrityError, TransactionManagementError
-from tortoise.transactions import in_transaction
-
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import PluginType
 from zhenxun.utils.platform import PlatformUtils
@@ -82,9 +81,7 @@ async def init_bot_console(bot: Bot):
     except (IntegrityError, TransactionManagementError):
         async with in_transaction() as connection:
             bot_data = (
-                await BotConsole.filter(bot_id=bot.self_id)
-                .using_db(connection)
-                .get()
+                await BotConsole.filter(bot_id=bot.self_id).using_db(connection).get()
             )
         created = False
 

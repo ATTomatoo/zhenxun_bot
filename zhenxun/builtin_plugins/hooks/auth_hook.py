@@ -30,9 +30,9 @@ _BOT_CONNECT_TS: float | None = None
 _AUTH_QUEUE_MAXSIZE = 200
 _AUTH_QUEUE_HIGH_WATER = 160
 _AUTH_OVERLOAD_WINDOW = 5.0
-_AUTH_QUEUE: asyncio.Queue[
-    tuple[Matcher, Event, Bot, Uninfo, UniMsg]
-] = asyncio.Queue(maxsize=_AUTH_QUEUE_MAXSIZE)
+_AUTH_QUEUE: asyncio.Queue[tuple[Matcher, Event, Bot, Uninfo, UniMsg]] = asyncio.Queue(
+    maxsize=_AUTH_QUEUE_MAXSIZE
+)
 _AUTH_QUEUE_STARTED = False
 _AUTH_WORKERS: list[asyncio.Task] = []
 _LAST_DROP_LOG = 0.0

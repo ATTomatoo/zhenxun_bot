@@ -71,9 +71,7 @@ def _send_limit_notice(message: str, format_kwargs: dict[str, Any], key: str) ->
 
     async def _send():
         try:
-            await MessageUtils.build_message(
-                message, format_args=format_kwargs
-            ).send()
+            await MessageUtils.build_message(message, format_args=format_kwargs).send()
         except Exception as exc:
             logger.error("limit notice send failed", LOGGER_COMMAND, e=exc)
 
@@ -309,9 +307,7 @@ class LimitManager:
                     left_time = limiter.left_time(key_type)
                     cd_str = TimeUtils.format_duration(left_time)
                     format_kwargs = {"cd": cd_str}
-                notice_key = _limit_notice_key(
-                    limit, user_id, group_id, channel_id
-                )
+                notice_key = _limit_notice_key(limit, user_id, group_id, channel_id)
                 _send_limit_notice(limit.result, format_kwargs, notice_key)
             raise SkipPluginException(
                 f"{limit.module}({limit.limit_type}) 正在限制中..."

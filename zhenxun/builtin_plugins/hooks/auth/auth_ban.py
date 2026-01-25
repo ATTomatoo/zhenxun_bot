@@ -45,6 +45,7 @@ Config.add_plugin_config(
     help="ban cache ttl seconds for non-banned users",
 )
 
+
 def _coerce_ttl(value, default):
     try:
         value_int = int(value)
@@ -134,6 +135,7 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
     if not BanMemoryCache.is_loaded():
         return 0
     return BanMemoryCache.remaining_time(user_id, group_id)
+
 
 def check_plugin_type(matcher: Matcher) -> bool:
     """判断插件类型是否是隐藏插件
