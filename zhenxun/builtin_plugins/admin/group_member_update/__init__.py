@@ -11,7 +11,7 @@ from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import Alconna, Arparma, on_alconna
 from nonebot_plugin_apscheduler import scheduler
 from nonebot_plugin_session import EventSession
-from nonebot_plugin_uninfo import SceneType, Uninfo, get_interface
+from nonebot_plugin_uninfo import Scene, SceneType, Uninfo, get_interface
 
 from zhenxun.configs.config import BotConfig
 from zhenxun.configs.utils import PluginExtraData
@@ -100,7 +100,7 @@ def _should_update(key: tuple[str, str], now: float) -> bool:
     return True
 
 
-async def _build_scene_map(bot: Bot) -> dict[str, object]:
+async def _build_scene_map(bot: Bot) -> dict[str, Scene]:
     if not (interface := get_interface(bot)):
         return {}
     scenes = await interface.get_scenes(SceneType.GROUP)
@@ -111,7 +111,7 @@ async def _run_update(
     bot: Bot,
     group_id: str,
     *,
-    scene_map: dict[str, object] | None = None,
+    scene_map: dict[str, Scene] | None = None,
     platform: str | None = None,
     force: bool = False,
 ) -> str | None:
@@ -195,12 +195,13 @@ async def _(bot: Bot, session: EventSession):
 
 @_matcher.handle()
 async def _(bot: Bot, session: EventSession, arparma: Arparma):
-    if gid := session.id3 or session.id2:
-        logger.info("更新群组成员信息", arparma.header_result, session=session)
-        result = await _run_update(bot, gid, force=True)
-        await MessageUtils.build_message(result).finish(reply_to=True)
-        await tag_manager._invalidate_cache()
-    await MessageUtils.build_message("群组id为空...").send()
+    if not (gid := session.id3 or session.id2):
+        await MessageUtils.build_message("群组id为空...").send()
+        return
+    logger.info("更新群组成员信息", arparma.header_result, session=session)
+    result = await _run_update(bot, gid, force=True)
+    await MessageUtils.build_message(result or "更新已完成").finish(reply_to=True)
+    await tag_manager._invalidate_cache()
 
 
 @_notice.handle()
@@ -224,7 +225,7 @@ async def _(session: Uninfo):
     entity = get_entity_ids(session)
     if not entity.group_id:
         return
-    platform = session.platform.lower() if session.platform else ""
+    platform = PlatformUtils.get_platform(session)
     if platform and not platform.startswith("qq"):
         return
     _record_group_message(session.self_id, entity.group_id)

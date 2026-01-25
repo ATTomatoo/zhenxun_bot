@@ -1,4 +1,4 @@
-from typing import Any, ClassVar, cast, overload
+from typing import Any, ClassVar, TYPE_CHECKING, cast, overload
 from typing_extensions import Self
 
 from tortoise import fields
@@ -11,6 +11,9 @@ from zhenxun.services.cache.runtime_cache import GroupMemoryCache
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.db_context import Model
 from zhenxun.utils.enum import CacheType, DbLockType, PluginType
+
+if TYPE_CHECKING:
+    from zhenxun.services.cache.runtime_cache import GroupSnapshot
 
 
 def add_disable_marker(name: str) -> str:
@@ -258,7 +261,7 @@ class GroupConsole(Model):
         group_id: str,
         channel_id: str | None = None,
         clean_duplicates: bool = True,
-    ) -> Self | None:
+    ) -> "GroupSnapshot | None":
         return GroupMemoryCache.get_if_ready(group_id, channel_id)
 
     @classmethod

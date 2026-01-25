@@ -71,7 +71,9 @@ def _send_limit_notice(message: str, format_kwargs: dict[str, Any], key: str) ->
 
     async def _send():
         try:
-            await MessageUtils.build_message(message, format_args=format_kwargs).send()
+            await MessageUtils.build_message(
+                message, format_args=format_kwargs
+            ).send()
         except Exception as exc:
             logger.error("limit notice send failed", LOGGER_COMMAND, e=exc)
 
@@ -92,7 +94,7 @@ class LimitManager:
 
     # 模块限制缓存，避免频繁查询数据库
     module_limit_cache: ClassVar[
-        dict[str, tuple[float, list[PluginLimit | PluginLimitSnapshot], bool]]
+        dict[str, tuple[float, list[PluginLimitSnapshot], bool]]
     ] = {}
     module_cache_ttl: ClassVar[float] = 60  # 模块缓存有效期（秒）
     module_cache_error_ttl: ClassVar[float] = 5  # 超时缓存有效期（秒）
@@ -136,7 +138,7 @@ class LimitManager:
             cls.is_updating = False
 
     @classmethod
-    def add_limit(cls, limit: PluginLimit):
+    def add_limit(cls, limit: PluginLimit | PluginLimitSnapshot):
         """添加限制
 
         参数:
@@ -184,9 +186,7 @@ class LimitManager:
             limiter.set_false(key_type)
 
     @classmethod
-    async def get_module_limits(
-        cls, module: str
-    ) -> list[PluginLimit | PluginLimitSnapshot]:
+    async def get_module_limits(cls, module: str) -> list[PluginLimitSnapshot]:
         """获取模块的限制信息，使用缓存减少数据库查询
 
         参数:
@@ -307,7 +307,9 @@ class LimitManager:
                     left_time = limiter.left_time(key_type)
                     cd_str = TimeUtils.format_duration(left_time)
                     format_kwargs = {"cd": cd_str}
-                notice_key = _limit_notice_key(limit, user_id, group_id, channel_id)
+                notice_key = _limit_notice_key(
+                    limit, user_id, group_id, channel_id
+                )
                 _send_limit_notice(limit.result, format_kwargs, notice_key)
             raise SkipPluginException(
                 f"{limit.module}({limit.limit_type}) 正在限制中..."
