@@ -559,7 +559,7 @@ class RuntimeCacheSync:
     async def _handle_message(cls, raw: Any) -> None:
         if raw is None:
             return
-        if isinstance(raw, (bytes, bytearray)):
+        if isinstance(raw, bytes | bytearray):
             try:
                 raw = raw.decode()
             except Exception:
