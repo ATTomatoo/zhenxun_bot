@@ -1,4 +1,4 @@
-from typing import Any, ClassVar, TYPE_CHECKING, cast, overload
+from typing import TYPE_CHECKING, Any, ClassVar, cast, overload
 from typing_extensions import Self
 
 from tortoise import fields

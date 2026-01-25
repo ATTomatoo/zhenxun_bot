@@ -45,9 +45,7 @@ def _normalize_platform(platform: str | set[str] | None) -> str | None:
     return platform
 
 
-async def _safe_get_group_member_info(
-    bot: Bot, group_id: str, user_id: str
-) -> dict:
+async def _safe_get_group_member_info(bot: Bot, group_id: str, user_id: str) -> dict:
     async with _API_SEMAPHORE:
         try:
             return await asyncio.wait_for(
@@ -71,6 +69,8 @@ async def _safe_get_group_info(bot: Bot, group_id: str) -> dict | None:
         except (asyncio.TimeoutError, ActionFailed, Exception) as e:
             logger.warning("获取群信息失败", e=e)
             return None
+
+
 async def _refresh_member_info_async(
     bot: Bot, group_id: str, user_id: str, platform: str | None
 ) -> None:
@@ -411,9 +411,7 @@ class GroupManager:
                 )
                 if operator_user:
                     operator_name = (
-                        operator_user.nickname
-                        or operator_user.user_name
-                        or operator_id
+                        operator_user.nickname or operator_user.user_name or operator_id
                     )
                 else:
                     operator_name = operator_id
