@@ -121,14 +121,14 @@ async def calculate_ban_time(ban_record: BanConsole | None) -> int:
 
 
 async def is_ban(user_id: str | None, group_id: str | None) -> int:
-    """??????????ban
+    """检查用户或群组是否被ban
 
-    ??:
-        user_id: ??ID
-        group_id: ??ID
+    参数:
+        user_id: 用户ID
+        group_id: 群组ID
 
-    ??:
-        int: ban??????0????ban
+    返回:
+        int: ban剩余时长，-1时为永久ban，0表示未被ban
     """
     if not user_id and not group_id:
         return 0
