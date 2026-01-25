@@ -450,7 +450,9 @@ class RuntimeCacheSync:
 
     @classmethod
     def _sync_enabled(cls) -> bool:
-        enabled = bool(Config.get_config("hook", "RUNTIME_CACHE_SYNC_ENABLED", True))
+        enabled = bool(
+            Config.get_config("hook", "RUNTIME_CACHE_SYNC_ENABLED", True)
+        )
         return enabled and _redis_enabled()
 
     @classmethod
@@ -687,7 +689,9 @@ class BotMemoryCache:
 
     @classmethod
     def _negative_ttl(cls) -> int:
-        return _coerce_int(Config.get_config("hook", "BOT_MEM_NEGATIVE_TTL", 60), 60)
+        return _coerce_int(
+            Config.get_config("hook", "BOT_MEM_NEGATIVE_TTL", 60), 60
+        )
 
     @classmethod
     def _is_negative(cls, bot_id: str) -> bool:
@@ -847,7 +851,9 @@ class GroupMemoryCache:
 
     @classmethod
     def _negative_ttl(cls) -> int:
-        return _coerce_int(Config.get_config("hook", "GROUP_MEM_NEGATIVE_TTL", 60), 60)
+        return _coerce_int(
+            Config.get_config("hook", "GROUP_MEM_NEGATIVE_TTL", 60), 60
+        )
 
     @classmethod
     def _is_negative(cls, key: tuple[str, str]) -> bool:
@@ -1011,7 +1017,9 @@ class LevelUserMemoryCache:
         return value if value else ""
 
     @classmethod
-    def _key(cls, user_id: str | None, group_id: str | None) -> tuple[str, str] | None:
+    def _key(
+        cls, user_id: str | None, group_id: str | None
+    ) -> tuple[str, str] | None:
         user_id = cls._normalize(user_id)
         if not user_id:
             return None
@@ -1020,7 +1028,9 @@ class LevelUserMemoryCache:
 
     @classmethod
     def _negative_ttl(cls) -> int:
-        return _coerce_int(Config.get_config("hook", "LEVEL_MEM_NEGATIVE_TTL", 60), 60)
+        return _coerce_int(
+            Config.get_config("hook", "LEVEL_MEM_NEGATIVE_TTL", 60), 60
+        )
 
     @classmethod
     def _is_negative(cls, key: tuple[str, str]) -> bool:
@@ -1195,7 +1205,9 @@ class PluginLimitMemoryCache:
 
     @classmethod
     def _negative_ttl(cls) -> int:
-        return _coerce_int(Config.get_config("hook", "LIMIT_MEM_NEGATIVE_TTL", 30), 30)
+        return _coerce_int(
+            Config.get_config("hook", "LIMIT_MEM_NEGATIVE_TTL", 30), 30
+        )
 
     @classmethod
     def _is_negative(cls, module: str) -> bool:
@@ -1314,7 +1326,9 @@ class PluginLimitMemoryCache:
                     for item in cls._by_module.get(entry.module, [])
                     if item.id != entry.id
                 ]
-        RuntimeCacheSync.publish_event("plugin_limit", "delete", {"id": int(limit_id)})
+        RuntimeCacheSync.publish_event(
+            "plugin_limit", "delete", {"id": int(limit_id)}
+        )
 
     @classmethod
     async def apply_sync_event(cls, action: str, data: dict[str, Any]) -> None:
@@ -1372,7 +1386,9 @@ class BanMemoryCache:
 
     @classmethod
     def _neg_ttl(cls) -> int:
-        return _coerce_int(Config.get_config("hook", "BAN_MEM_NEGATIVE_TTL", 5), 5)
+        return _coerce_int(
+            Config.get_config("hook", "BAN_MEM_NEGATIVE_TTL", 5), 5
+        )
 
     @classmethod
     def _neg_key(
@@ -1640,9 +1656,13 @@ class BanMemoryCache:
         )
         cleanup_db = bool(Config.get_config("hook", "BAN_MEM_CLEANUP_DB", True))
 
-        if refresh_interval > 0 and (not cls._refresh_task or cls._refresh_task.done()):
+        if refresh_interval > 0 and (
+            not cls._refresh_task or cls._refresh_task.done()
+        ):
             cls._refresh_task = asyncio.create_task(cls._refresh_loop(refresh_interval))
-        if clean_interval > 0 and (not cls._cleanup_task or cls._cleanup_task.done()):
+        if clean_interval > 0 and (
+            not cls._cleanup_task or cls._cleanup_task.done()
+        ):
             cls._cleanup_task = asyncio.create_task(
                 cls._cleanup_loop(clean_interval, cleanup_db)
             )
