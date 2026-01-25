@@ -81,7 +81,7 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime
 from functools import wraps
-from typing import Any, ClassVar, Generic, TypeVar, get_type_hints
+from typing import Any, ClassVar, Generic, TypeVar, cast, get_type_hints
 from typing_extensions import Self
 
 from aiocache import Cache as AioCache
@@ -298,7 +298,7 @@ class CacheManager:
         """单例模式"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-        return cls._instance
+        return cast(Self, cls._instance)
 
     @property
     def enabled(self) -> bool:

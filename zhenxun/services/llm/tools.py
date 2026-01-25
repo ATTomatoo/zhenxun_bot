@@ -424,7 +424,7 @@ class ToolProviderManager:
     def __new__(cls) -> Self:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-        return cls._instance
+        return cast(Self, cls._instance)
 
     def __init__(self):
         if hasattr(self, "_initialized") and self._initialized:

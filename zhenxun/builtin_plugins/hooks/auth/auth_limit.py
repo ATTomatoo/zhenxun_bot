@@ -71,7 +71,9 @@ def _send_limit_notice(message: str, format_kwargs: dict[str, Any], key: str) ->
 
     async def _send():
         try:
-            await MessageUtils.build_message(message, format_args=format_kwargs).send()
+            await MessageUtils.build_message(
+                message, format_args=format_kwargs
+            ).send()
         except Exception as exc:
             logger.error("limit notice send failed", LOGGER_COMMAND, e=exc)
 
@@ -149,12 +151,16 @@ class LimitManager:
                     limit=limit, limiter=UserBlockLimiter()
                 )
             elif limit.limit_type == PluginLimitType.CD:
+                cd_value = int(limit.cd or 0)
                 cls.cd_limit[limit.module] = Limit(
-                    limit=limit, limiter=FreqLimiter(limit.cd)
+                    limit=limit, limiter=FreqLimiter(cd_value)
                 )
             elif limit.limit_type == PluginLimitType.COUNT:
+                max_count = int(limit.max_count or 0)
+                if max_count <= 0:
+                    return
                 cls.count_limit[limit.module] = Limit(
-                    limit=limit, limiter=CountLimiter(limit.max_count)
+                    limit=limit, limiter=CountLimiter(max_count)
                 )
 
     @classmethod
@@ -305,7 +311,9 @@ class LimitManager:
                     left_time = limiter.left_time(key_type)
                     cd_str = TimeUtils.format_duration(left_time)
                     format_kwargs = {"cd": cd_str}
-                notice_key = _limit_notice_key(limit, user_id, group_id, channel_id)
+                notice_key = _limit_notice_key(
+                    limit, user_id, group_id, channel_id
+                )
                 _send_limit_notice(limit.result, format_kwargs, notice_key)
             raise SkipPluginException(
                 f"{limit.module}({limit.limit_type}) 正在限制中..."
