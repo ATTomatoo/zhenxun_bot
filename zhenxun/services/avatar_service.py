@@ -135,7 +135,9 @@ avatar_service = AvatarService()
 
 
 @scheduler.scheduled_job(
-    "interval", hours=Config.get_config("avatar_cache", "CLEANUP_INTERVAL_HOURS", 24)
+    "cron",
+    hour=4,
+    minute=30,
 )
 async def _run_avatar_cache_cleanup():
     await avatar_service._cleanup_cache()

@@ -3,6 +3,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 import hashlib
 import inspect
+import os
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -50,6 +51,14 @@ class RenderContext:
     processed_components: set[int] = field(default_factory=set)
 
 
+@dataclass
+class RenderJob:
+    component: Renderable
+    use_cache: bool
+    render_options: dict[str, Any]
+    future: asyncio.Future["RenderResult"]
+
+
 class RendererService:
     """
     图片渲染服务的统一门面。
@@ -71,11 +80,132 @@ class RendererService:
         self._screenshot_engine: ScreenshotEngine | None = None
         self._initialized = False
         self._init_lock = asyncio.Lock()
+        self._queue_lock = asyncio.Lock()
+        self._render_queue: asyncio.Queue[RenderJob] | None = None
+        self._render_workers: list[asyncio.Task[None]] = []
+        self._min_render_workers = 1
+        self._max_render_workers = max(1, os.cpu_count() or 2)
+        self._worker_idle_timeout = 20.0
+        self._scale_threshold = 3
+        self._worker_seq = 0
         self._custom_filters: dict[str, Callable] = {}
         self._custom_globals: dict[str, Callable] = {}
 
         self.filter("dump_json")(self._pydantic_tojson_filter)
         self.global_function("inline_asset")(self._inline_asset_global)
+
+    async def _ensure_render_queue(self) -> None:
+        if self._render_queue:
+            return
+        async with self._queue_lock:
+            if self._render_queue:
+                return
+            self._render_queue = asyncio.Queue(maxsize=200)
+            for _ in range(self._min_render_workers):
+                self._spawn_worker()
+            logger.info(
+                f"UI render queue started: workers={len(self._render_workers)}, "
+                f"maxsize=200, max_workers={self._max_render_workers}",
+                "renderer",
+            )
+
+    def _spawn_worker(self) -> None:
+        self._worker_seq += 1
+        worker_id = self._worker_seq
+        task = asyncio.create_task(self._render_worker(worker_id))
+        self._render_workers.append(task)
+
+    async def _maybe_scale_up(self) -> None:
+        if not self._render_queue:
+            return
+        async with self._queue_lock:
+            if not self._render_queue:
+                return
+            queue_size = self._render_queue.qsize()
+            desired = max(
+                self._min_render_workers,
+                (queue_size + self._scale_threshold - 1) // self._scale_threshold,
+            )
+            desired = min(self._max_render_workers, desired)
+            current = len(self._render_workers)
+            if desired <= current:
+                return
+            for _ in range(desired - current):
+                self._spawn_worker()
+            logger.info(
+                f"UI render queue scale up: workers={len(self._render_workers)} "
+                f"(queue={queue_size})",
+                "renderer",
+            )
+
+    async def _render_worker(self, worker_id: int) -> None:
+        assert self._render_queue is not None
+        while True:
+            try:
+                job = await asyncio.wait_for(
+                    self._render_queue.get(), timeout=self._worker_idle_timeout
+                )
+            except asyncio.TimeoutError:
+                async with self._queue_lock:
+                    if len(self._render_workers) > self._min_render_workers:
+                        task = asyncio.current_task()
+                        if task in self._render_workers:
+                            self._render_workers.remove(task)
+                        logger.info(
+                            f"render worker {worker_id} idle, stopping", "renderer"
+                        )
+                        return
+                continue
+            try:
+                result = await self._render_internal(
+                    job.component, job.use_cache, job.render_options
+                )
+                if not job.future.cancelled():
+                    job.future.set_result(result)
+            except Exception as e:
+                if not job.future.cancelled():
+                    job.future.set_exception(e)
+                logger.error(
+                    f"render worker {worker_id} failed", "renderer", e=e
+                )
+            finally:
+                self._render_queue.task_done()
+
+    async def _render_internal(
+        self, component: Renderable, use_cache: bool, render_options: dict[str, Any]
+    ) -> "RenderResult":
+        if not self._initialized:
+            await self.initialize()
+        assert self._theme_manager is not None, "ThemeManager 未初始化"
+        assert self._screenshot_engine is not None, "ScreenshotEngine 未初始化"
+
+        context = RenderContext(
+            renderer=self,
+            theme_manager=self._theme_manager,
+            screenshot_engine=self._screenshot_engine,
+            component=component,
+            use_cache=use_cache,
+            render_options=render_options,
+        )
+        return await self._render_component(context)
+
+    async def render_full_result(
+        self, component: Renderable, use_cache: bool = False, **render_options
+    ) -> "RenderResult":
+        await self._ensure_render_queue()
+        assert self._render_queue is not None
+        await self._maybe_scale_up()
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[RenderResult] = loop.create_future()
+        await self._render_queue.put(
+            RenderJob(
+                component=component,
+                use_cache=use_cache,
+                render_options=render_options,
+                future=future,
+            )
+        )
+        return await future
 
     def _create_jinja_env(self) -> Environment:
         """
@@ -515,20 +645,9 @@ class RendererService:
         异常:
             RenderingError: 当渲染流程中任何步骤失败时抛出。
         """
-        if not self._initialized:
-            await self.initialize()
-        assert self._theme_manager is not None, "ThemeManager 未初始化"
-        assert self._screenshot_engine is not None, "ScreenshotEngine 未初始化"
-
-        context = RenderContext(
-            renderer=self,
-            theme_manager=self._theme_manager,
-            screenshot_engine=self._screenshot_engine,
-            component=component,
-            use_cache=use_cache,
-            render_options=render_options,
+        result = await self.render_full_result(
+            component, use_cache=use_cache, **render_options
         )
-        result = await self._render_component(context)
         if Config.get_config("UI", "DEBUG_MODE") and result.html_content:
             sanitized_html = sanitize_for_logging(
                 result.html_content, context="ui_html"

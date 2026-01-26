@@ -174,8 +174,9 @@ async def _(
 
 
 @scheduler.scheduled_job(
-    "interval",
-    hours=1,
+    "cron",
+    hour=4,
+    minute=10,
 )
 async def _():
     try:

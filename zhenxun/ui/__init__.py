@@ -195,22 +195,10 @@ async def render_full_result(
         RenderResult: 一个包含 `image_bytes` 和 `html_content` 的Pydantic模型。
     """
     from zhenxun.services import renderer_service
-    from zhenxun.services.renderer.service import RenderContext
 
-    if not renderer_service._initialized:
-        await renderer_service.initialize()
-    assert renderer_service._theme_manager is not None, "ThemeManager 未初始化"
-    assert renderer_service._screenshot_engine is not None, "ScreenshotEngine 未初始化"
-
-    context = RenderContext(
-        renderer=renderer_service,
-        theme_manager=renderer_service._theme_manager,
-        screenshot_engine=renderer_service._screenshot_engine,
-        component=component,
-        use_cache=use_cache,
-        render_options=kwargs,
+    return await renderer_service.render_full_result(
+        component, use_cache=use_cache, **kwargs
     )
-    return await renderer_service._render_component(context)
 
 
 __all__ = [

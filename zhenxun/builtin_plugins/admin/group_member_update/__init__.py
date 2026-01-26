@@ -3,7 +3,7 @@ import random
 import time
 
 import nonebot
-from nonebot import on_message, on_notice
+from nonebot import on_notice
 from nonebot.adapters import Bot
 from nonebot.adapters.onebot.v11 import GroupIncreaseNoticeEvent
 from nonebot.permission import SUPERUSER
@@ -11,17 +11,17 @@ from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import Alconna, Arparma, on_alconna
 from nonebot_plugin_apscheduler import scheduler
 from nonebot_plugin_session import EventSession
-from nonebot_plugin_uninfo import Scene, SceneType, Uninfo, get_interface
+from nonebot_plugin_uninfo import Scene, SceneType, get_interface
 
 from zhenxun.configs.config import BotConfig
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.services.log import logger
+from zhenxun.services.message_load import should_pause_tasks
 from zhenxun.services.tags import tag_manager
 from zhenxun.utils.enum import PluginType
 from zhenxun.utils.message import MessageUtils
 from zhenxun.utils.platform import PlatformUtils
 from zhenxun.utils.rules import admin_check, ensure_group, notice_rule
-from zhenxun.utils.utils import get_entity_ids
 
 from ._data_source import MemberUpdateManage
 
@@ -41,12 +41,8 @@ __plugin_meta__ = PluginMetadata(
     ).to_dict(),
 )
 
-_ACTIVE_IDLE_SECONDS = 90
-_UPDATE_COOLDOWN_SECONDS = 10 * 60
-_ACTIVE_TRACK_TTL_SECONDS = 24 * 60 * 60
 _FULL_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60
 
-_GROUP_LAST_MESSAGE: dict[tuple[str, str], float] = {}
 _GROUP_LAST_UPDATE: dict[tuple[str, str], float] = {}
 _UPDATE_SEMAPHORE = asyncio.Semaphore(1)
 
@@ -74,32 +70,6 @@ def _group_key(bot_id: str, group_id: str) -> tuple[str, str]:
     return bot_id, group_id
 
 
-def _record_group_message(bot_id: str, group_id: str) -> None:
-    _GROUP_LAST_MESSAGE[_group_key(bot_id, group_id)] = time.time()
-
-
-def _prune_activity(now: float) -> None:
-    expire_before = now - _ACTIVE_TRACK_TTL_SECONDS
-    for key, last_msg in list(_GROUP_LAST_MESSAGE.items()):
-        if last_msg < expire_before:
-            _GROUP_LAST_MESSAGE.pop(key, None)
-            _GROUP_LAST_UPDATE.pop(key, None)
-
-
-def _should_update(key: tuple[str, str], now: float) -> bool:
-    last_msg = _GROUP_LAST_MESSAGE.get(key)
-    if not last_msg:
-        return False
-    if now - last_msg < _ACTIVE_IDLE_SECONDS:
-        return False
-    last_update = _GROUP_LAST_UPDATE.get(key, 0)
-    if last_msg <= last_update:
-        return False
-    if now - last_update < _UPDATE_COOLDOWN_SECONDS:
-        return False
-    return True
-
-
 async def _build_scene_map(bot: Bot) -> dict[str, Scene]:
     if not (interface := get_interface(bot)):
         return {}
@@ -116,9 +86,6 @@ async def _run_update(
     force: bool = False,
 ) -> str | None:
     key = _group_key(bot.self_id, group_id)
-    now = time.time()
-    if not force and not _should_update(key, now):
-        return None
     async with _UPDATE_SEMAPHORE:
         result = await MemberUpdateManage.update_group_member(
             bot, group_id, scene_map=scene_map, platform=platform
@@ -217,82 +184,16 @@ async def _(bot: Bot, event: GroupIncreaseNoticeEvent):
         await tag_manager._invalidate_cache()
 
 
-_group_message_tracker = on_message(priority=999, block=False)
-
-
-@_group_message_tracker.handle()
-async def _(session: Uninfo):
-    entity = get_entity_ids(session)
-    if not entity.group_id:
-        return
-    platform = PlatformUtils.get_platform(session)
-    if platform and not platform.startswith("qq"):
-        return
-    _record_group_message(session.self_id, entity.group_id)
-
-
-@scheduler.scheduled_job(
-    "interval",
-    minutes=5,
-    max_instances=1,
-    coalesce=True,
-)
-async def _():
-    now = time.time()
-    _prune_activity(now)
-    bots = nonebot.get_bots()
-    if not bots or not _GROUP_LAST_MESSAGE:
-        return
-    active_by_bot: dict[str, list[str]] = {}
-    for (bot_id, group_id), _ in _GROUP_LAST_MESSAGE.items():
-        key = (bot_id, group_id)
-        if bot_id not in bots:
-            continue
-        if _should_update(key, now):
-            active_by_bot.setdefault(bot_id, []).append(group_id)
-    if not active_by_bot:
-        return
-    updated = 0
-    for bot_id, group_ids in active_by_bot.items():
-        bot = bots.get(bot_id)
-        if not bot:
-            continue
-        platform = PlatformUtils.get_platform(bot)
-        if platform != "qq":
-            continue
-        try:
-            scene_map = await _build_scene_map(bot)
-            if not scene_map:
-                continue
-            for group_id in group_ids:
-                if group_id not in scene_map:
-                    continue
-                try:
-                    result = await _run_update(
-                        bot, group_id, scene_map=scene_map, platform=platform
-                    )
-                    if result is not None:
-                        updated += 1
-                except Exception as e:
-                    logger.error(
-                        f"Bot: {bot.self_id} 自动更新群组成员信息失败",
-                        target=group_id,
-                        e=e,
-                    )
-        except Exception as e:
-            logger.error(f"Bot: {bot.self_id} 自动更新群组信息", e=e)
-    if updated:
-        await tag_manager._invalidate_cache()
-
-
 @scheduler.scheduled_job(
     "cron",
     hour=3,
-    minute=30,
+    minute=0,
     max_instances=1,
     coalesce=True,
 )
 async def _nightly_full_refresh():
+    if should_pause_tasks():
+        return
     now = time.time()
     bots = nonebot.get_bots()
     if not bots:

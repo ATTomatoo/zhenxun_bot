@@ -85,8 +85,8 @@ def _clear_data() -> float:
 
 @scheduler.scheduled_job(
     "cron",
-    hour=1,
-    minute=1,
+    hour=3,
+    minute=20,
 )
 async def _():
     size = await _clear_data()

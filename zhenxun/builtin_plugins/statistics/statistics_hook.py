@@ -12,6 +12,7 @@ from zhenxun.configs.utils import PluginExtraData
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.statistics import Statistics
 from zhenxun.services.log import logger
+from zhenxun.services.message_load import should_pause_tasks
 from zhenxun.utils.enum import PluginType
 
 __plugin_meta__ = PluginMetadata(
@@ -53,9 +54,11 @@ async def _(
             )
 
 
-@scheduler.scheduled_job("interval", minutes=1, max_instances=5)
+@scheduler.scheduled_job("interval", minutes=30, max_instances=1, coalesce=True)
 async def _():
     try:
+        if should_pause_tasks():
+            return
         call_list = TEMP_LIST.copy()
         TEMP_LIST.clear()
         if call_list:
