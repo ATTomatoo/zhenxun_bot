@@ -4,6 +4,7 @@ from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
 from zhenxun.services.cache import CacheRoot
+from zhenxun.services.cache.runtime_cache import TaskInfoMemoryCache
 from zhenxun.utils.common_utils import CommonUtils
 from zhenxun.utils.enum import BlockType, CacheType, PluginType
 from zhenxun.utils.exception import GroupInfoNotFound
@@ -338,9 +339,11 @@ class PluginManager:
         """
         if is_default:
             await TaskInfo.all().update(default_status=False)
+            await TaskInfoMemoryCache.refresh()
             return "已禁用所有被动进群默认状态"
         else:
             await TaskInfo.all().update(status=False)
+            await TaskInfoMemoryCache.refresh()
             return "已全局禁用所有被动状态"
 
     @classmethod
@@ -355,9 +358,11 @@ class PluginManager:
         """
         if is_default:
             await TaskInfo.filter(name=name).update(default_status=False)
+            await TaskInfoMemoryCache.refresh()
             return f"已禁用被动进群默认状态 {name}"
         else:
             await TaskInfo.filter(name=name).update(status=False)
+            await TaskInfoMemoryCache.refresh()
             return f"已全局禁用被动状态 {name}"
 
     @classmethod
@@ -372,9 +377,11 @@ class PluginManager:
         """
         if is_default:
             await TaskInfo.all().update(default_status=True)
+            await TaskInfoMemoryCache.refresh()
             return "已开启所有被动进群默认状态"
         else:
             await TaskInfo.all().update(status=True)
+            await TaskInfoMemoryCache.refresh()
             return "已全局开启所有被动状态"
 
     @classmethod
@@ -390,9 +397,11 @@ class PluginManager:
         """
         if is_default:
             await TaskInfo.filter(name=name).update(default_status=True)
+            await TaskInfoMemoryCache.refresh()
             return f"已开启被动进群默认状态 {name}"
         else:
             await TaskInfo.filter(name=name).update(status=True)
+            await TaskInfoMemoryCache.refresh()
             return f"已全局开启被动状态 {name}"
 
     @classmethod

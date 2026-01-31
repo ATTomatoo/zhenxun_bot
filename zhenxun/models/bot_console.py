@@ -62,8 +62,9 @@ class BotConsole(Model):
             list[tuple[str, bool]] | bool: bot状态
         """
         if not bot_id:
-            return await cls.all().values_list("bot_id", "status")
-        result = await cls.get_or_none(bot_id=bot_id)
+            data = await BotMemoryCache.get_all()
+            return [(bot_id, snapshot.status) for bot_id, snapshot in data.items()]
+        result = await BotMemoryCache.get(bot_id)
         return result.status if result else False
 
     @overload
@@ -95,12 +96,13 @@ class BotConsole(Model):
             list[tuple[str, str]] | str: 被动技能
         """
         if not bot_id:
-            task_field: Literal["available_tasks", "block_tasks"] = (
-                "available_tasks" if status else "block_tasks"
-            )
-            data_list = await cls.all().values_list("bot_id", task_field)
-            return {k: cls.convert_module_format(v) for k, v in data_list}
-        result = await cls.get_or_none(bot_id=bot_id)
+            data = await BotMemoryCache.get_all()
+            task_attr = "available_tasks" if status else "block_tasks"
+            return {
+                bot_id: cls.convert_module_format(getattr(snapshot, task_attr))
+                for bot_id, snapshot in data.items()
+            }
+        result = await BotMemoryCache.get(bot_id)
         if result:
             tasks = result.available_tasks if status else result.block_tasks
             return cls.convert_module_format(tasks)
@@ -135,11 +137,14 @@ class BotConsole(Model):
             list[tuple[str, str]] | str: 插件
         """
         if not bot_id:
-            plugin_field = "available_plugins" if status else "block_plugins"
-            data_list = await cls.all().values_list("bot_id", plugin_field)
-            return {k: cls.convert_module_format(v) for k, v in data_list}
+            data = await BotMemoryCache.get_all()
+            plugin_attr = "available_plugins" if status else "block_plugins"
+            return {
+                bot_id: cls.convert_module_format(getattr(snapshot, plugin_attr))
+                for bot_id, snapshot in data.items()
+            }
 
-        result = await cls.get_or_none(bot_id=bot_id)
+        result = await BotMemoryCache.get(bot_id)
         if result:
             plugins = result.available_plugins if status else result.block_plugins
             return cls.convert_module_format(plugins)
@@ -419,7 +424,9 @@ class BotConsole(Model):
         返回:
             bool: 是否被禁用
         """
-        bot_data, _ = await cls.get_or_create(bot_id=bot_id)
+        bot_data = await BotMemoryCache.get(bot_id)
+        if not bot_data:
+            return False
         return cls.format(plugin_name) in bot_data.block_plugins
 
     @classmethod
@@ -434,7 +441,9 @@ class BotConsole(Model):
         返回:
             bool: 是否被禁用
         """
-        bot_data, _ = await cls.get_or_create(bot_id=bot_id)
+        bot_data = await BotMemoryCache.get(bot_id)
+        if not bot_data:
+            return False
         return cls.format(task_name) in bot_data.block_tasks
 
     @classmethod

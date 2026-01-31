@@ -22,19 +22,19 @@ LOG_COMMAND = "RuntimeCache"
 Config.add_plugin_config(
     "hook",
     "PLUGININFO_MEM_REFRESH_INTERVAL",
-    300,
+    1800,
     help="plugin info memory cache refresh seconds",
 )
 Config.add_plugin_config(
     "hook",
     "BAN_MEM_REFRESH_INTERVAL",
-    60,
+    900,
     help="ban memory cache full refresh seconds",
 )
 Config.add_plugin_config(
     "hook",
     "BAN_MEM_CLEAN_INTERVAL",
-    60,
+    900,
     help="ban memory cache cleanup seconds",
 )
 Config.add_plugin_config(
@@ -52,7 +52,7 @@ Config.add_plugin_config(
 Config.add_plugin_config(
     "hook",
     "BOT_MEM_REFRESH_INTERVAL",
-    60,
+    900,
     help="bot memory cache refresh seconds",
 )
 Config.add_plugin_config(
@@ -64,7 +64,7 @@ Config.add_plugin_config(
 Config.add_plugin_config(
     "hook",
     "GROUP_MEM_REFRESH_INTERVAL",
-    60,
+    900,
     help="group memory cache refresh seconds",
 )
 Config.add_plugin_config(
@@ -76,7 +76,7 @@ Config.add_plugin_config(
 Config.add_plugin_config(
     "hook",
     "LEVEL_MEM_REFRESH_INTERVAL",
-    120,
+    900,
     help="level memory cache refresh seconds",
 )
 Config.add_plugin_config(
@@ -87,8 +87,20 @@ Config.add_plugin_config(
 )
 Config.add_plugin_config(
     "hook",
-    "LIMIT_MEM_REFRESH_INTERVAL",
+    "TASK_MEM_REFRESH_INTERVAL",
+    900,
+    help="task info memory cache refresh seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "TASK_MEM_NEGATIVE_TTL",
     60,
+    help="task info negative cache ttl seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "LIMIT_MEM_REFRESH_INTERVAL",
+    900,
     help="plugin limit memory cache refresh seconds",
 )
 Config.add_plugin_config(
@@ -440,6 +452,40 @@ class PluginLimitSnapshot:
         )
 
 
+@dataclass(frozen=True)
+class TaskInfoSnapshot:
+    module: str
+    status: bool
+    load_status: bool
+    default_status: bool
+
+    @classmethod
+    def from_model(cls, model) -> "TaskInfoSnapshot":
+        return cls(
+            module=str(model.module),
+            status=bool(getattr(model, "status", True)),
+            load_status=bool(getattr(model, "load_status", True)),
+            default_status=bool(getattr(model, "default_status", True)),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "module": self.module,
+            "status": self.status,
+            "load_status": self.load_status,
+            "default_status": self.default_status,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TaskInfoSnapshot":
+        return cls(
+            module=str(payload.get("module", "")),
+            status=bool(payload.get("status", True)),
+            load_status=bool(payload.get("load_status", True)),
+            default_status=bool(payload.get("default_status", True)),
+        )
+
+
 class RuntimeCacheSync:
     _redis: ClassVar[Any | None] = None
     _pubsub: ClassVar[Any | None] = None
@@ -583,6 +629,8 @@ class RuntimeCacheSync:
             await BanMemoryCache.apply_sync_event(action, data)
         elif cache_type == "level":
             await LevelUserMemoryCache.apply_sync_event(action, data)
+        elif cache_type == "task":
+            await TaskInfoMemoryCache.apply_sync_event(action, data)
         elif cache_type == "plugin_limit":
             await PluginLimitMemoryCache.apply_sync_event(action, data)
 
@@ -739,6 +787,12 @@ class BotMemoryCache:
             return None
         cls._mark_negative(bot_id)
         return None
+
+    @classmethod
+    async def get_all(cls) -> dict[str, BotSnapshot]:
+        if not cls._loaded:
+            await cls.ensure_loaded()
+        return dict(cls._by_id)
 
     @classmethod
     async def update_status(cls, bot_id: str | None, status: bool) -> None:
@@ -1000,6 +1054,7 @@ class GroupMemoryCache:
 class LevelUserMemoryCache:
     _lock: ClassVar[asyncio.Lock] = asyncio.Lock()
     _by_key: ClassVar[dict[tuple[str, str], LevelUserSnapshot]] = {}
+    _by_user_max: ClassVar[dict[str, int]] = {}
     _negative: ClassVar[dict[tuple[str, str], float]] = {}
     _loaded: ClassVar[bool] = False
     _refresh_task: ClassVar[asyncio.Task | None] = None
@@ -1048,12 +1103,17 @@ class LevelUserMemoryCache:
         async with cls._lock:
             records = await LevelUser.all()
             by_key: dict[tuple[str, str], LevelUserSnapshot] = {}
+            by_user_max: dict[str, int] = {}
             for record in records:
                 entry = LevelUserSnapshot.from_model(record)
                 key = cls._key(entry.user_id, entry.group_id)
                 if key:
                     by_key[key] = entry
+                    current = by_user_max.get(entry.user_id, 0)
+                    if entry.user_level > current:
+                        by_user_max[entry.user_id] = entry.user_level
             cls._by_key = by_key
+            cls._by_user_max = by_user_max
             cls._negative = {}
             cls._loaded = True
             cls._last_refresh = time.time()
@@ -1113,14 +1173,29 @@ class LevelUserMemoryCache:
         return global_user, group_user
 
     @classmethod
+    async def get_max_level(cls, user_id: str | None) -> int:
+        user_id = cls._normalize(user_id)
+        if not user_id:
+            return 0
+        if not cls._loaded:
+            await cls.ensure_loaded()
+        return cls._by_user_max.get(user_id, 0)
+
+    @classmethod
     async def upsert_from_model(cls, record) -> None:
         entry = LevelUserSnapshot.from_model(record)
         key = cls._key(entry.user_id, entry.group_id)
         if not key:
             return
         async with cls._lock:
+            prev = cls._by_key.get(key)
             cls._by_key[key] = entry
             cls._negative.pop(key, None)
+            current = cls._by_user_max.get(entry.user_id, 0)
+            if entry.user_level >= current:
+                cls._by_user_max[entry.user_id] = entry.user_level
+            elif prev and prev.user_level == current and entry.user_level < current:
+                cls._recalc_user_max(entry.user_id)
         RuntimeCacheSync.publish_event("level", "upsert", entry.to_payload())
 
     @classmethod
@@ -1130,8 +1205,14 @@ class LevelUserMemoryCache:
         if not key:
             return
         async with cls._lock:
+            prev = cls._by_key.get(key)
             cls._by_key[key] = entry
             cls._negative.pop(key, None)
+            current = cls._by_user_max.get(entry.user_id, 0)
+            if entry.user_level >= current:
+                cls._by_user_max[entry.user_id] = entry.user_level
+            elif prev and prev.user_level == current and entry.user_level < current:
+                cls._recalc_user_max(entry.user_id)
 
     @classmethod
     async def remove(cls, user_id: str | None, group_id: str | None) -> None:
@@ -1139,10 +1220,23 @@ class LevelUserMemoryCache:
         if not key:
             return
         async with cls._lock:
-            cls._by_key.pop(key, None)
+            removed = cls._by_key.pop(key, None)
+            if removed and cls._by_user_max.get(removed.user_id) == removed.user_level:
+                cls._recalc_user_max(removed.user_id)
         RuntimeCacheSync.publish_event(
             "level", "delete", {"user_id": key[0], "group_id": key[1] or None}
         )
+
+    @classmethod
+    def _recalc_user_max(cls, user_id: str) -> None:
+        max_level = 0
+        for entry in cls._by_key.values():
+            if entry.user_id == user_id and entry.user_level > max_level:
+                max_level = entry.user_level
+        if max_level:
+            cls._by_user_max[user_id] = max_level
+        else:
+            cls._by_user_max.pop(user_id, None)
 
     @classmethod
     async def apply_sync_event(cls, action: str, data: dict[str, Any]) -> None:
@@ -1166,6 +1260,145 @@ class LevelUserMemoryCache:
     def start_tasks(cls) -> None:
         interval = _coerce_int(
             Config.get_config("hook", "LEVEL_MEM_REFRESH_INTERVAL", 120), 120
+        )
+        if interval <= 0:
+            return
+        if cls._refresh_task and not cls._refresh_task.done():
+            return
+        cls._refresh_task = asyncio.create_task(cls._refresh_loop(interval))
+
+    @classmethod
+    def stop_tasks(cls) -> None:
+        if cls._refresh_task and not cls._refresh_task.done():
+            cls._refresh_task.cancel()
+        cls._refresh_task = None
+
+
+class TaskInfoMemoryCache:
+    _lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    _by_module: ClassVar[dict[str, TaskInfoSnapshot]] = {}
+    _negative: ClassVar[dict[str, float]] = {}
+    _loaded: ClassVar[bool] = False
+    _refresh_task: ClassVar[asyncio.Task | None] = None
+
+    @classmethod
+    def _normalize(cls, module: str | None) -> str | None:
+        if module is None:
+            return None
+        module = module.strip()
+        return module if module else None
+
+    @classmethod
+    def _negative_ttl(cls) -> int:
+        return _coerce_int(Config.get_config("hook", "TASK_MEM_NEGATIVE_TTL", 60), 60)
+
+    @classmethod
+    def _is_negative(cls, module: str) -> bool:
+        expire_at = cls._negative.get(module)
+        if not expire_at:
+            return False
+        if expire_at <= time.time():
+            cls._negative.pop(module, None)
+            return False
+        return True
+
+    @classmethod
+    def _mark_negative(cls, module: str) -> None:
+        ttl = cls._negative_ttl()
+        if ttl <= 0:
+            return
+        cls._negative[module] = time.time() + ttl
+
+    @classmethod
+    async def refresh(cls) -> None:
+        from zhenxun.models.task_info import TaskInfo
+
+        async with cls._lock:
+            records = await TaskInfo.all()
+            cls._by_module = {r.module: TaskInfoSnapshot.from_model(r) for r in records}
+            cls._negative = {}
+            cls._loaded = True
+            logger.debug(
+                f"task info cache refreshed: {len(cls._by_module)} entries",
+                LOG_COMMAND,
+            )
+
+    @classmethod
+    async def ensure_loaded(cls) -> None:
+        if cls._loaded:
+            return
+        await cls.refresh()
+
+    @classmethod
+    async def get(cls, module: str | None) -> TaskInfoSnapshot | None:
+        module = cls._normalize(module)
+        if not module:
+            return None
+        if not cls._loaded:
+            await cls.ensure_loaded()
+        entry = cls._by_module.get(module)
+        if entry:
+            return entry
+        if cls._is_negative(module):
+            return None
+        cls._mark_negative(module)
+        return None
+
+    @classmethod
+    async def is_disabled(cls, module: str | None) -> bool:
+        entry = await cls.get(module)
+        if not entry:
+            return False
+        return not entry.status
+
+    @classmethod
+    async def upsert_from_model(cls, record) -> None:
+        entry = TaskInfoSnapshot.from_model(record)
+        async with cls._lock:
+            cls._by_module[entry.module] = entry
+            cls._negative.pop(entry.module, None)
+        RuntimeCacheSync.publish_event("task", "upsert", entry.to_payload())
+
+    @classmethod
+    async def upsert_from_payload(cls, payload: dict[str, Any]) -> None:
+        entry = TaskInfoSnapshot.from_payload(payload)
+        if not entry.module:
+            return
+        async with cls._lock:
+            cls._by_module[entry.module] = entry
+            cls._negative.pop(entry.module, None)
+
+    @classmethod
+    async def remove(cls, module: str | None) -> None:
+        module = cls._normalize(module)
+        if not module:
+            return
+        async with cls._lock:
+            cls._by_module.pop(module, None)
+        RuntimeCacheSync.publish_event("task", "delete", {"module": module})
+
+    @classmethod
+    async def apply_sync_event(cls, action: str, data: dict[str, Any]) -> None:
+        if action == "upsert":
+            await cls.upsert_from_payload(data)
+        elif action == "delete":
+            await cls.remove(data.get("module"))
+        elif action == "refresh":
+            await cls.refresh()
+
+    @classmethod
+    async def _refresh_loop(cls, interval: int) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await cls.refresh()
+            except Exception as exc:
+                logger.error("task info cache refresh failed", LOG_COMMAND, e=exc)
+
+    @classmethod
+    def start_tasks(cls) -> None:
+        interval = _coerce_int(
+            Config.get_config("hook", "TASK_MEM_REFRESH_INTERVAL", 300), 300
         )
         if interval <= 0:
             return
@@ -1701,6 +1934,10 @@ async def _init_runtime_cache():
     except Exception as exc:
         logger.error("level cache init failed", LOG_COMMAND, e=exc)
     try:
+        await TaskInfoMemoryCache.refresh()
+    except Exception as exc:
+        logger.error("task info cache init failed", LOG_COMMAND, e=exc)
+    try:
         await PluginLimitMemoryCache.refresh()
     except Exception as exc:
         logger.error("plugin limit cache init failed", LOG_COMMAND, e=exc)
@@ -1712,6 +1949,7 @@ async def _init_runtime_cache():
     BotMemoryCache.start_tasks()
     GroupMemoryCache.start_tasks()
     LevelUserMemoryCache.start_tasks()
+    TaskInfoMemoryCache.start_tasks()
     PluginLimitMemoryCache.start_tasks()
     BanMemoryCache.start_tasks()
     _CACHE_READY_EVENT.set()
@@ -1723,6 +1961,7 @@ async def _stop_runtime_cache():
     BotMemoryCache.stop_tasks()
     GroupMemoryCache.stop_tasks()
     LevelUserMemoryCache.stop_tasks()
+    TaskInfoMemoryCache.stop_tasks()
     PluginLimitMemoryCache.stop_tasks()
     BanMemoryCache.stop_tasks()
     await RuntimeCacheSync.stop()

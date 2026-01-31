@@ -1092,8 +1092,11 @@ class Cache(Generic[T]):
 
 @driver.on_startup
 async def _():
-    CacheRoot.enabled = True
-    logger.info("缓存系统已启用", LOG_COMMAND)
+    CacheRoot.enabled = cache_config.cache_mode != CacheMode.NONE
+    if CacheRoot.enabled:
+        logger.info("缓存系统已启用", LOG_COMMAND)
+    else:
+        logger.info("缓存系统已禁用", LOG_COMMAND)
 
 
 @driver.on_shutdown

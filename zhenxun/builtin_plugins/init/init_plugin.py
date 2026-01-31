@@ -14,6 +14,7 @@ from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.plugin_limit import PluginLimit
 from zhenxun.models.task_info import TaskInfo
+from zhenxun.services.cache.runtime_cache import TaskInfoMemoryCache
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import (
     BlockType,
@@ -379,6 +380,7 @@ async def group_migration():
                 if close_task := data["close_task"]:
                     """全局被动关闭"""
                     await TaskInfo.filter(module__in=close_task).update(status=False)
+                    await TaskInfoMemoryCache.refresh()
                 group_list = await GroupConsole.filter(
                     group_id__in=old_group_list.keys()
                 )

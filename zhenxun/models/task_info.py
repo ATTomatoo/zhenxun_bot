@@ -1,5 +1,6 @@
 from tortoise import fields
 
+from zhenxun.services.cache.runtime_cache import TaskInfoMemoryCache
 from zhenxun.services.db_context import Model
 
 
@@ -24,6 +25,27 @@ class TaskInfo(Model):
     class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "task_info"
         table_description = "被动技能基本信息"
+
+    @classmethod
+    async def create(cls, *args, **kwargs):
+        result = await super().create(*args, **kwargs)
+        await TaskInfoMemoryCache.upsert_from_model(result)
+        return result
+
+    @classmethod
+    async def update_or_create(cls, *args, **kwargs):
+        result = await super().update_or_create(*args, **kwargs)
+        await TaskInfoMemoryCache.upsert_from_model(result[0])
+        return result
+
+    async def save(self, *args, **kwargs):
+        await super().save(*args, **kwargs)
+        await TaskInfoMemoryCache.upsert_from_model(self)
+
+    async def delete(self, *args, **kwargs):
+        module = self.module
+        await super().delete(*args, **kwargs)
+        await TaskInfoMemoryCache.remove(module)
 
     @classmethod
     async def _run_script(cls):

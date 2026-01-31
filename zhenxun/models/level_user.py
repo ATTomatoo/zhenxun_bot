@@ -40,7 +40,7 @@ class LevelUser(Model):
         """
         if not group_id:
             return 0
-        if user := await cls.get_or_none(user_id=user_id, group_id=group_id):
+        if user := await LevelUserMemoryCache.get(user_id, group_id):
             return user.user_level
         return 0
 
@@ -103,11 +103,11 @@ class LevelUser(Model):
         if level == 0:
             return True
         if group_id:
-            if user := await cls.get_or_none(user_id=user_id, group_id=group_id):
+            if user := await LevelUserMemoryCache.get(user_id, group_id):
                 return user.user_level >= level
-        elif user_list := await cls.filter(user_id=user_id).all():
-            user = max(user_list, key=lambda x: x.user_level)
-            return user.user_level >= level
+            return False
+        max_level = await LevelUserMemoryCache.get_max_level(user_id)
+        return max_level >= level
         return False
 
     @classmethod
@@ -121,7 +121,7 @@ class LevelUser(Model):
         返回:
             bool: 是否会被自动更新权限刷新
         """
-        if user := await cls.get_or_none(user_id=user_id, group_id=group_id):
+        if user := await LevelUserMemoryCache.get(user_id, group_id):
             return user.group_flag == 1
         return False
 
