@@ -11,6 +11,7 @@ from nonebot_plugin_session import EventSession
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.statistics import Statistics
+from zhenxun.services.cache.runtime_cache import PluginInfoMemoryCache
 from zhenxun.services.log import logger
 from zhenxun.services.message_load import should_pause_tasks
 from zhenxun.utils.enum import PluginType
@@ -39,7 +40,13 @@ async def _(
         """过滤除poke外的notice"""
         return
     if session.id1 and matcher.plugin:
-        plugin = await PluginInfo.get_plugin(module_path=matcher.plugin.module_name)
+        plugin = PluginInfoMemoryCache.get_by_module_path(matcher.plugin.module_name)
+        if not plugin:
+            plugin = await PluginInfo.get_plugin(
+                module_path=matcher.plugin.module_name
+            )
+            if plugin:
+                PluginInfoMemoryCache.set_plugin(plugin)
         plugin_type = plugin.plugin_type if plugin else None
         if plugin_type == PluginType.NORMAL:
             logger.debug(f"提交调用记录: {matcher.plugin_name}...", session=session)
