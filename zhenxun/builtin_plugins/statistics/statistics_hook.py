@@ -42,9 +42,7 @@ async def _(
     if session.id1 and matcher.plugin:
         plugin = PluginInfoMemoryCache.get_by_module_path(matcher.plugin.module_name)
         if not plugin:
-            plugin = await PluginInfo.get_plugin(
-                module_path=matcher.plugin.module_name
-            )
+            plugin = await PluginInfo.get_plugin(module_path=matcher.plugin.module_name)
             if plugin:
                 PluginInfoMemoryCache.set_plugin(plugin)
         plugin_type = plugin.plugin_type if plugin else None
