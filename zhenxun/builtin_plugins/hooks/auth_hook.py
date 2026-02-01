@@ -11,25 +11,20 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.services.cache.runtime_cache import is_cache_ready
 from zhenxun.services.log import logger
-from zhenxun.services.message_load import is_overloaded, signal_overload
+from zhenxun.services.message_load import is_overloaded
 from zhenxun.utils.utils import get_entity_ids
 
 from .auth.config import LOGGER_COMMAND
-from .auth.exception import SkipPluginException
 from .auth_checker import (
     LimitManager,
     _get_event_cache,
     auth,
-    auth_ban_fast,
-    auth_precheck,
     route_precheck,
 )
 
 _SKIP_AUTH_PLUGINS = {"chat_history", "chat_message"}
 _BOT_CONNECT_TS: float | None = None
 _AUTH_QUEUE_MAXSIZE = 200
-_AUTH_QUEUE_HIGH_WATER = 160
-_AUTH_OVERLOAD_WINDOW = 5.0
 _AUTH_QUEUE: asyncio.Queue[tuple[Matcher, Event, Bot, Uninfo, UniMsg]] = asyncio.Queue(
     maxsize=_AUTH_QUEUE_MAXSIZE
 )
@@ -107,41 +102,30 @@ async def _auth_preprocessor(
 ):
     if event.get_type() == "message" and not is_cache_ready():
         raise IgnoredException("cache not ready ignore")
-    if _skip_auth_for_plugin(matcher):
-        return
     start_time = time.time()
     entity = get_entity_ids(session)
-    event_cache = _get_event_cache(event, session, entity)
+    _get_event_cache(event, session, entity)
+
     if await route_precheck(matcher, event, session, message):
         return
-    try:
-        await auth_ban_fast(matcher, event, bot, session)
-    except SkipPluginException as exc:
-        logger.info(str(exc), LOGGER_COMMAND, session=session)
-        raise IgnoredException("ban fast ignore") from exc
-    try:
-        await auth_precheck(matcher, event, bot, session, message)
-    except SkipPluginException as exc:
-        logger.info(str(exc), LOGGER_COMMAND, session=session)
-        raise IgnoredException("precheck ignore") from exc
-
-    if event_cache is not None and event_cache.get("route_skip") is True:
-        if not is_overloaded():
-            logger.debug("route miss skip auth task", LOGGER_COMMAND)
+    if _skip_auth_for_plugin(matcher):
         return
 
     try:
-        _AUTH_QUEUE.put_nowait((matcher, event, bot, session, message))
-    except asyncio.QueueFull:
-        signal_overload(_AUTH_OVERLOAD_WINDOW)
-        now = time.monotonic()
-        global _LAST_DROP_LOG
-        if now - _LAST_DROP_LOG > 1.0:
-            _LAST_DROP_LOG = now
-            logger.warning("auth queue full, skip auth task", LOGGER_COMMAND)
-        return
-    if _AUTH_QUEUE.qsize() >= _AUTH_QUEUE_HIGH_WATER:
-        signal_overload(_AUTH_OVERLOAD_WINDOW)
+        await auth(
+            matcher,
+            event,
+            bot,
+            session,
+            message,
+            skip_ban=False,
+        )
+    except IgnoredException:
+        raise
+    except Exception as exc:
+        logger.error("auth check failed", LOGGER_COMMAND, e=exc)
+        raise IgnoredException("auth failed") from exc
+
     now = time.monotonic()
     last_log = getattr(_auth_preprocessor, "_last_log", 0.0)
     if now - last_log > 1.0 and not is_overloaded():
