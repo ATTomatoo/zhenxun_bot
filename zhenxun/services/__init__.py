@@ -52,6 +52,7 @@ from .scheduler import (
     Trigger,
     scheduler_manager,
 )
+from . import task_probe  # noqa: F401
 
 __all__ = [
     "AI",
