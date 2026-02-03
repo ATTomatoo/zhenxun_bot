@@ -86,7 +86,7 @@ _DROP_LOG_INTERVAL = 10.0
 
 
 @chat_history.handle()
-async def _(message: UniMsg, session: Uninfo):
+async def _(event: Event, message: UniMsg, session: Uninfo):
     entity = get_entity_ids(session)
     now = time.time()
     if entity.group_id:
@@ -95,12 +95,22 @@ async def _(message: UniMsg, session: Uninfo):
         _LAST_USER_SAVE[entity.user_id] = now
     if is_overloaded():
         return
+    raw_text = None
+    if hasattr(event, "raw_message"):
+        raw_text = getattr(event, "raw_message")
+    if not raw_text:
+        try:
+            raw_text = str(event.get_message())
+        except Exception:
+            raw_text = None
+    if not raw_text:
+        raw_text = str(message)
     try:
         _HISTORY_QUEUE.put_nowait(
             ChatHistory(
                 user_id=entity.user_id,
                 group_id=entity.group_id,
-                text=str(message),
+                text=raw_text,
                 plain_text=message.extract_plain_text(),
                 bot_id=session.self_id,
                 platform=session.platform,
