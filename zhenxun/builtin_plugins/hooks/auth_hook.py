@@ -111,6 +111,15 @@ def _skip_auth_for_plugin(matcher: Matcher) -> bool:
     return "chat_history" in module_name
 
 
+def _resolve_actor_user_id(event: Event, fallback_user_id: str) -> str:
+    """优先使用事件发起者ID，避免 notice 场景 session.user 指向 bot 自身。"""
+    event_user_id = getattr(event, "user_id", None)
+    if event_user_id is None:
+        return fallback_user_id
+    event_user_id = str(event_user_id)
+    return event_user_id or fallback_user_id
+
+
 @event_preprocessor
 async def _drop_message_before_cache_ready(event: Event):
     if event.get_type() != "message":
@@ -138,6 +147,7 @@ async def _auth_preprocessor(
     entity = state.get("_zx_entity")
     if entity is None:
         entity = get_entity_ids(session)
+        entity.user_id = _resolve_actor_user_id(event, entity.user_id)
         state["_zx_entity"] = entity
 
     event_cache = state.get("_zx_event_cache")
@@ -159,7 +169,7 @@ async def _auth_preprocessor(
 
     is_superuser = state.get("_zx_is_superuser")
     if is_superuser is None:
-        is_superuser = session.user.id in bot.config.superusers
+        is_superuser = entity.user_id in bot.config.superusers
         state["_zx_is_superuser"] = is_superuser
 
     if await route_precheck(
@@ -207,8 +217,8 @@ async def _auth_preprocessor(
 
 
 @run_postprocessor
-async def _unblock_after_matcher(matcher: Matcher, session: Uninfo):
-    user_id = session.user.id
+async def _unblock_after_matcher(matcher: Matcher, session: Uninfo, event: Event):
+    user_id = _resolve_actor_user_id(event, session.user.id)
     group_id = None
     channel_id = None
     if session.group:
