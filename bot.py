@@ -15,6 +15,9 @@ driver.register_adapter(OneBotV11Adapter)
 # driver.register_adapter(DiscordAdapter)
 
 from zhenxun.services.db_context import disconnect
+from zhenxun.services.runtime_bootstrap import register_runtime_bootstrap
+
+register_runtime_bootstrap(driver)
 
 # driver.on_startup(init)
 driver.on_shutdown(disconnect)

@@ -34,5 +34,6 @@ class CacheMode:
 SPECIAL_KEY_FORMATS = {
     "LEVEL": "{user_id}" + COMPOSITE_KEY_SEPARATOR + "{group_id}",
     "BAN": "{user_id}" + COMPOSITE_KEY_SEPARATOR + "{group_id}",
+    "GLOBAL_ALL_BAN": "{user_id}" + COMPOSITE_KEY_SEPARATOR + "{group_id}",
     "GROUPS": "{group_id}" + COMPOSITE_KEY_SEPARATOR + "{channel_id}",
 }
