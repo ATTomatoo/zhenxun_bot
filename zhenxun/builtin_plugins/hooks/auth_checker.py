@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 import contextlib
 import os
+import re
 import time
 from typing import cast
 
@@ -212,7 +213,20 @@ def _get_event_cache(event: Event, session: Uninfo, entity):
 
 
 def _normalize_command(command: str) -> str:
-    return command.strip()
+    text = command.strip()
+    if not text:
+        return ""
+
+    # strip leading placeholders like "[引用消息] 撤回"
+    text = re.sub(r"^(?:\s*(?:\[[^\]]*]|\<[^>]*>))+\s*", "", text)
+
+    # keep command head: "点歌 [歌名]" -> "点歌", "foo <arg>" -> "foo"
+    cut_points = [idx for idx in (text.find("["), text.find("<")) if idx >= 0]
+    if cut_points:
+        text = text[: min(cut_points)]
+
+    # normalize spacing after trimming placeholders
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _extract_commands(extra: PluginExtraData | None) -> set[str]:
