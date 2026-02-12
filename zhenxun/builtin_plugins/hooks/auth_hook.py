@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import time
 
 from nonebot import get_driver
@@ -20,6 +21,8 @@ from .auth_checker import (
     _get_event_cache,
     auth,
     route_precheck,
+    start_auth_runtime_tasks,
+    stop_auth_runtime_tasks,
 )
 
 _SKIP_AUTH_PLUGINS = {"chat_history", "chat_message"}
@@ -72,6 +75,27 @@ async def _start_auth_queue():
     worker_count = max(1, min(6, _AUTH_QUEUE_MAXSIZE // 50))
     for idx in range(worker_count):
         _AUTH_WORKERS.append(asyncio.create_task(_auth_worker(idx)))
+    await start_auth_runtime_tasks()
+
+
+@driver.on_shutdown
+async def _stop_auth_queue():
+    global _AUTH_QUEUE_STARTED
+    _AUTH_QUEUE_STARTED = False
+
+    workers = _AUTH_WORKERS.copy()
+    _AUTH_WORKERS.clear()
+    for task in workers:
+        task.cancel()
+    if workers:
+        await asyncio.gather(*workers, return_exceptions=True)
+
+    while not _AUTH_QUEUE.empty():
+        with contextlib.suppress(Exception):
+            _AUTH_QUEUE.get_nowait()
+            _AUTH_QUEUE.task_done()
+
+    await stop_auth_runtime_tasks()
 
 
 def _skip_auth_for_plugin(matcher: Matcher) -> bool:
@@ -85,9 +109,10 @@ def _skip_auth_for_plugin(matcher: Matcher) -> bool:
 
 
 @event_preprocessor
-async def _drop_message_before_cache_ready(event: Event):
+async def _drop_message_before_cache_ready(event: Event, bot: Bot):
     if event.get_type() != "message":
         return
+    del bot
     if not is_cache_ready():
         raise IgnoredException("cache not ready ignore")
     if _BOT_CONNECT_TS is not None:
@@ -104,9 +129,11 @@ async def _auth_preprocessor(
         raise IgnoredException("cache not ready ignore")
     start_time = time.time()
     entity = get_entity_ids(session)
-    _get_event_cache(event, session, entity)
+    event_cache = _get_event_cache(event, session, entity)
 
-    if await route_precheck(matcher, event, session, message):
+    if await route_precheck(
+        matcher, event, session, message, entity=entity, event_cache=event_cache
+    ):
         return
     if _skip_auth_for_plugin(matcher):
         return
@@ -119,6 +146,8 @@ async def _auth_preprocessor(
             session,
             message,
             skip_ban=False,
+            entity=entity,
+            event_cache=event_cache,
         )
     except IgnoredException:
         raise
