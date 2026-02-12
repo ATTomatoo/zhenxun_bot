@@ -13,6 +13,7 @@ DEFAULT_ANYIO_MAX_TOKENS = 128
 
 _thread_executor: ThreadPoolExecutor | None = None
 _runtime_hooks_registered = False
+_alconna_patch_applied = False
 
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:
@@ -30,7 +31,32 @@ def _get_anyio_tokens(executor_workers: int) -> int:
     )
 
 
+def _apply_alconna_conflict_patch() -> None:
+    global _alconna_patch_applied
+    if _alconna_patch_applied:
+        return
+    with contextlib.suppress(Exception):
+        from arclet.alconna import formatter as alconna_formatter
+
+        text_formatter = getattr(alconna_formatter, "TextFormatter", None)
+        if text_formatter is None:
+            return
+        original_remove = getattr(text_formatter, "remove", None)
+        if getattr(original_remove, "__zhenxun_safe_remove__", False):
+            _alconna_patch_applied = True
+            return
+
+        def _safe_remove(self, base):
+            # Tolerate duplicate command cleanup when formatter hash is absent.
+            self.data.pop(base._hash, None)
+
+        setattr(_safe_remove, "__zhenxun_safe_remove__", True)
+        setattr(text_formatter, "remove", _safe_remove)
+        _alconna_patch_applied = True
+
+
 def register_runtime_bootstrap(driver: Driver) -> None:
+    _apply_alconna_conflict_patch()
     global _runtime_hooks_registered
     if _runtime_hooks_registered:
         return
