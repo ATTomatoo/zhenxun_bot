@@ -226,15 +226,56 @@ def _normalize_command(command: str) -> str:
         text = text[: min(cut_points)]
 
     # normalize spacing after trimming placeholders
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    # remove trailing template markers left by forms like "foo ?[arg]" / "foo ?*[tags]"
+    text = re.sub(r"(?:\s+[?*]+|[?*]+)$", "", text).strip()
+    return text
 
 
-def _extract_commands(extra: PluginExtraData | None) -> set[str]:
+def _split_command_variants(command: str) -> tuple[str, ...]:
+    text = command.strip()
+    if not text:
+        return ()
+    # Keep slash-prefixed commands like "/info" as-is.
+    if text.startswith("/"):
+        return (text,)
+    # "今日运势/抽签/运势" => ("今日运势", "抽签", "运势")
+    if "/" in text and " " not in text:
+        parts = tuple(part.strip() for part in text.split("/") if part.strip())
+        if parts:
+            return parts
+    return (text,)
+
+
+def _is_ambiguous_route_command(command: str) -> bool:
+    text = command.strip()
+    if not text:
+        return True
+    # Keep route-index strict only for literal, deterministic command heads.
+    if any(token in text for token in ("?", "*", "|", "(", ")", "^", "$", "re:")):
+        return True
+    if "xx" in text.lower():
+        return True
+    return False
+
+
+def _extract_commands(extra: PluginExtraData | None) -> tuple[set[str], bool]:
     if not extra:
-        return set()
+        return set(), False
     commands = {c.command for c in extra.commands if c.command}
     commands.update(extra.aliases or set())
-    return {cmd.strip() for cmd in commands if cmd and cmd.strip()}
+    normalized_commands: set[str] = set()
+    has_ambiguous = False
+    for command in commands:
+        normalized = _normalize_command(command)
+        if not normalized:
+            continue
+        for variant in _split_command_variants(normalized):
+            if _is_ambiguous_route_command(variant):
+                has_ambiguous = True
+                continue
+            normalized_commands.add(variant)
+    return normalized_commands, has_ambiguous
 
 
 async def _ensure_route_index():
@@ -255,15 +296,14 @@ async def _ensure_route_index():
                 extra_data = PluginExtraData(**extra)
             except Exception:
                 continue
-            command_set = _extract_commands(extra_data)
+            command_set, has_ambiguous = _extract_commands(extra_data)
             if not command_set:
+                continue
+            if has_ambiguous:
                 continue
             module = plugin.name
             _ROUTE_MODULES_WITH_COMMANDS.add(module)
-            for command in command_set:
-                normalized = _normalize_command(command)
-                if not normalized:
-                    continue
+            for normalized in command_set:
                 _ROUTE_COMMAND_MAP.setdefault(normalized, set()).add(module)
                 _ROUTE_PREFIX_MAP.setdefault(normalized[0], set()).add(normalized)
         _ROUTE_INDEX_READY = True
@@ -484,6 +524,9 @@ async def _check_matcher_prefilter(
         return False, None
 
     is_command_matcher = _is_command_matcher_class(matcher_cls)
+    if not is_command_matcher:
+        return False, None
+
     text = _state_plain_text(state)
     if is_command_matcher and not text:
         text = _event_plain_text(event)
@@ -500,8 +543,6 @@ async def _check_matcher_prefilter(
         await _ensure_route_index()
 
     if module not in _ROUTE_MODULES_WITH_COMMANDS:
-        if not is_command_matcher:
-            return False, None
         matcher_commands = _extract_matcher_command_literals(matcher_cls)
         if matcher_commands:
             for command in matcher_commands:
@@ -1017,6 +1058,8 @@ async def route_precheck(
         return False
     if _is_hidden_plugin(matcher):
         return False
+    if not _is_command_matcher_class(type(matcher)):
+        return False
     if entity is None:
         entity = get_entity_ids(session)
     if event_cache is None:
@@ -1094,6 +1137,7 @@ async def auth(
     if is_superuser is None:
         is_superuser = session.user.id in bot.config.superusers
     module = matcher.plugin_name or ""
+    is_command_matcher = _is_command_matcher_class(type(matcher))
     if event_cache is None:
         event_cache = _get_event_cache(event, session, entity)
     auth_allowed = None
@@ -1132,7 +1176,9 @@ async def auth(
         if route_modules is None:
             route_modules = await _get_route_context(text, event_cache)
         route_skip_checks = (
-            module in _ROUTE_MODULES_WITH_COMMANDS and module not in route_modules
+            is_command_matcher
+            and module in _ROUTE_MODULES_WITH_COMMANDS
+            and module not in route_modules
         )
         if route_skip_checks:
             if event_cache is not None:
