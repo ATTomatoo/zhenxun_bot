@@ -120,6 +120,26 @@ def _resolve_actor_user_id(event: Event, fallback_user_id: str) -> str:
     return event_user_id or fallback_user_id
 
 
+def _resolve_event_group_id(event: Event, fallback_group_id: str | None) -> str | None:
+    """notice 场景 session.group 可能缺失，回退到事件上的 group_id。"""
+    event_group_id = getattr(event, "group_id", None)
+    if event_group_id is None:
+        return fallback_group_id
+    resolved = str(event_group_id)
+    return resolved or fallback_group_id
+
+
+def _resolve_event_channel_id(
+    event: Event, fallback_channel_id: str | None
+) -> str | None:
+    """频道场景回退到事件上的 channel_id。"""
+    event_channel_id = getattr(event, "channel_id", None)
+    if event_channel_id is None:
+        return fallback_channel_id
+    resolved = str(event_channel_id)
+    return resolved or fallback_channel_id
+
+
 @event_preprocessor
 async def _drop_message_before_cache_ready(event: Event):
     if event.get_type() != "message":
@@ -148,6 +168,8 @@ async def _auth_preprocessor(
     if entity is None:
         entity = get_entity_ids(session)
         entity.user_id = _resolve_actor_user_id(event, entity.user_id)
+        entity.group_id = _resolve_event_group_id(event, entity.group_id)
+        entity.channel_id = _resolve_event_channel_id(event, entity.channel_id)
         state["_zx_entity"] = entity
 
     event_cache = state.get("_zx_event_cache")
@@ -219,8 +241,8 @@ async def _auth_preprocessor(
 @run_postprocessor
 async def _unblock_after_matcher(matcher: Matcher, session: Uninfo, event: Event):
     user_id = _resolve_actor_user_id(event, session.user.id)
-    group_id = None
-    channel_id = None
+    group_id = _resolve_event_group_id(event, None)
+    channel_id = _resolve_event_channel_id(event, None)
     if session.group:
         if session.group.parent:
             group_id = session.group.parent.id
