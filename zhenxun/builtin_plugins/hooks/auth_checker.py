@@ -614,14 +614,27 @@ def _uninstall_matcher_prefilter() -> None:
     _ORIGINAL_CHECK_AND_RUN_MATCHER = None
 
 
-def _get_message_text(message: UniMsg, event_cache: dict | None) -> str:
-    if event_cache is None:
-        return message.extract_plain_text()
-    cached = event_cache.get("plain_text")
-    if cached is None:
-        cached = message.extract_plain_text()
-        event_cache["plain_text"] = cached
-    return cached
+def _get_message_text(
+    message: UniMsg | None,
+    event_cache: dict | None,
+    event: Event | None = None,
+) -> str:
+    if event_cache is not None:
+        cached = event_cache.get("plain_text")
+        if isinstance(cached, str):
+            return cached
+
+    text = ""
+    if message is not None:
+        with contextlib.suppress(Exception):
+            text = message.extract_plain_text()
+    if not text and event is not None:
+        with contextlib.suppress(Exception):
+            text = (event.get_plaintext() or "").strip()
+
+    if event_cache is not None:
+        event_cache["plain_text"] = text
+    return text
 
 
 async def _get_route_context(text: str, event_cache: dict | None) -> set[str]:
@@ -1046,7 +1059,7 @@ async def route_precheck(
     matcher: Matcher,
     event: Event,
     session: Uninfo,
-    message: UniMsg,
+    message: UniMsg | None,
     *,
     entity=None,
     event_cache: dict | None = None,
@@ -1065,7 +1078,7 @@ async def route_precheck(
     if event_cache is None:
         event_cache = _get_event_cache(event, session, entity)
     if text is None:
-        text = _get_message_text(message, event_cache)
+        text = _get_message_text(message, event_cache, event)
     if route_modules is None:
         route_modules = await _get_route_context(text, event_cache)
     if module in _ROUTE_MODULES_WITH_COMMANDS and module not in route_modules:
@@ -1111,7 +1124,7 @@ async def auth(
     event: Event,
     bot: Bot,
     session: Uninfo,
-    message: UniMsg,
+    message: UniMsg | None,
     *,
     skip_ban: bool = False,
     entity=None,
@@ -1172,7 +1185,7 @@ async def auth(
             raise SkipPluginException("user or group banned (cached)")
 
         if text is None:
-            text = _get_message_text(message, event_cache)
+            text = _get_message_text(message, event_cache, event)
         if route_modules is None:
             route_modules = await _get_route_context(text, event_cache)
         route_skip_checks = (
@@ -1251,7 +1264,7 @@ async def auth(
             if ban_cache_state is None:
                 ban_start = time.time()
                 try:
-                    await auth_ban(matcher, bot, session, plugin)
+                    await auth_ban(matcher, bot, session, plugin, entity=entity)
                     hook_recorder.set("auth_ban", f"{time.time() - ban_start:.3f}s")
                     if event_cache is not None:
                         event_cache["ban_state"] = False
@@ -1269,7 +1282,7 @@ async def auth(
             if ban_cache_state is None:
                 ban_start = time.time()
                 try:
-                    await auth_ban(matcher, bot, session, plugin)
+                    await auth_ban(matcher, bot, session, plugin, entity=entity)
                     hook_recorder.set("auth_ban", f"{time.time() - ban_start:.3f}s")
                     if event_cache is not None:
                         event_cache["ban_state"] = False

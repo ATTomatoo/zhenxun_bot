@@ -31,7 +31,9 @@ from .auth_checker import (
 _SKIP_AUTH_PLUGINS = {"chat_history", "chat_message"}
 _BOT_CONNECT_TS: float | None = None
 _AUTH_QUEUE_MAXSIZE = 200
-_AUTH_QUEUE: asyncio.Queue[tuple[Matcher, Event, Bot, Uninfo, UniMsg]] = asyncio.Queue(
+_AUTH_QUEUE: asyncio.Queue[
+    tuple[Matcher, Event, Bot, Uninfo, UniMsg | None]
+] = asyncio.Queue(
     maxsize=_AUTH_QUEUE_MAXSIZE
 )
 _AUTH_QUEUE_STARTED = False
@@ -68,6 +70,17 @@ async def _auth_worker(worker_id: int) -> None:
                 logger.error("async auth failed", LOGGER_COMMAND, e=exc)
         finally:
             _AUTH_QUEUE.task_done()
+
+
+def _extract_plain_text(message: UniMsg | None, event: Event) -> str:
+    if message is not None:
+        with contextlib.suppress(Exception):
+            return message.extract_plain_text()
+    with contextlib.suppress(Exception):
+        plain = event.get_plaintext()
+        if plain:
+            return plain.strip()
+    return ""
 
 
 @driver.on_startup
@@ -158,8 +171,8 @@ async def _auth_preprocessor(
     event: Event,
     bot: Bot,
     session: Uninfo,
-    message: UniMsg,
     state: T_State,
+    message: UniMsg | None = None,
 ):
     if event.get_type() == "message" and not is_cache_ready():
         raise IgnoredException("cache not ready ignore")
@@ -179,7 +192,7 @@ async def _auth_preprocessor(
 
     text = state.get("_zx_plain_text")
     if text is None:
-        text = message.extract_plain_text()
+        text = _extract_plain_text(message, event)
         state["_zx_plain_text"] = text
         if event_cache is not None:
             event_cache["plain_text"] = text

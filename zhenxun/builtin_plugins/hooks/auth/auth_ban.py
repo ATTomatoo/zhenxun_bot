@@ -216,7 +216,11 @@ async def user_handle(plugin: PluginInfo, entity: EntityIDs, session: Uninfo) ->
 
 
 async def auth_ban(
-    matcher: Matcher, bot: Bot, session: Uninfo, plugin: PluginInfo
+    matcher: Matcher,
+    bot: Bot,
+    session: Uninfo,
+    plugin: PluginInfo,
+    entity: EntityIDs | None = None,
 ) -> None:
     """权限检查 - ban 检查
 
@@ -231,7 +235,8 @@ async def auth_ban(
             return
         if not matcher.plugin_name:
             return
-        entity = get_entity_ids(session)
+        if entity is None:
+            entity = get_entity_ids(session)
         if entity.user_id in bot.config.superusers:
             return
         if entity.group_id:
