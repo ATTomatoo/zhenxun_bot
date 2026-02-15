@@ -135,6 +135,7 @@ _PREFILTER_STATS = {
 }
 _PREFILTER_LAST_LOG = 0.0
 _CACHE_SWEEP_TASK: asyncio.Task | None = None
+_BUILTIN_PLUGIN_PREFIX = "zhenxun.builtin_plugins."
 
 
 def _plugin_module_aliases(plugin) -> set[str]:
@@ -147,6 +148,14 @@ def _plugin_module_aliases(plugin) -> set[str]:
         if text:
             aliases.add(text)
     return aliases
+
+
+def _plugin_module_name(plugin) -> str:
+    return (getattr(plugin, "module_name", "") or "").strip()
+
+
+def _is_builtin_plugin_module(module_name: str) -> bool:
+    return module_name.startswith(_BUILTIN_PLUGIN_PREFIX)
 
 
 class HookTraceRecorder:
@@ -370,8 +379,10 @@ def _is_user_plugin_matcher(matcher_cls: type[Matcher]) -> bool:
     plugin = getattr(matcher_cls, "plugin", None)
     if not plugin:
         return False
-    module_name = (getattr(plugin, "module_name", "") or "").strip()
-    return module_name.startswith("zhenxun.plugins.")
+    module_name = _plugin_module_name(plugin)
+    # 兼容第三方/开箱等外部插件：只对本体内置插件启用严格路由预过滤
+    # module_name 为空时保守放行，避免因模块名不可用导致误判拦截。
+    return not module_name or not _is_builtin_plugin_module(module_name)
 
 
 def _is_command_matcher_class(matcher_cls: type[Matcher]) -> bool:
@@ -1102,6 +1113,8 @@ async def route_precheck(
     module = matcher.plugin_name or ""
     if not module:
         return False
+    if _is_user_plugin_matcher(type(matcher)):
+        return False
     if _is_hidden_plugin(matcher):
         return False
     if not _is_command_matcher_class(type(matcher)):
@@ -1201,6 +1214,7 @@ async def auth(
         is_superuser = session.user.id in bot.config.superusers
     module = matcher.plugin_name or ""
     is_command_matcher = _is_command_matcher_class(type(matcher))
+    bypass_route_prefilter = _is_user_plugin_matcher(type(matcher))
     if event_cache is None:
         event_cache = _get_event_cache(event, session, entity)
     auth_allowed = None
@@ -1240,6 +1254,7 @@ async def auth(
             route_modules = await _get_route_context(text, event_cache)
         route_skip_checks = (
             is_command_matcher
+            and not bypass_route_prefilter
             and module in _ROUTE_MODULES_WITH_COMMANDS
             and module not in route_modules
         )
