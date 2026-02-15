@@ -1,15 +1,17 @@
 import asyncio
+import os
+import time
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-import os
 from pathlib import Path
-import time
 from typing import Any, ClassVar, cast
 
 import aiofiles
 import httpx
-from httpx import AsyncClient, AsyncHTTPTransport, HTTPStatusError, Proxy, Response
 import nonebot
+import ujson as json
+from httpx import AsyncClient, AsyncHTTPTransport, HTTPStatusError, Proxy, Response
 from rich.progress import (
     BarColumn,
     DownloadColumn,
@@ -17,7 +19,6 @@ from rich.progress import (
     TextColumn,
     TransferSpeedColumn,
 )
-import ujson as json
 
 from zhenxun.configs.config import BotConfig
 from zhenxun.services.log import logger
@@ -163,6 +164,72 @@ class AsyncHttpx:
         if BotConfig.system_proxy
         else None
     )
+
+    _CONTENT_CACHE_TTL: ClassVar[float] = 3.0
+    _CONTENT_CACHE_MAX_ITEMS: ClassVar[int] = 256
+    _CONTENT_CACHE_MAX_BYTES: ClassVar[int] = 2 * 1024 * 1024
+    _content_cache: ClassVar[OrderedDict[str, tuple[float, bytes]]] = OrderedDict()
+    _content_inflight: ClassVar[dict[str, asyncio.Task[Response]]] = {}
+    _content_cache_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+
+    @classmethod
+    def _is_probably_image_url(cls, url: str) -> bool:
+        lower_url = url.lower()
+        if any(
+            ext in lower_url
+            for ext in (
+                ".jpg",
+                ".jpeg",
+                ".png",
+                ".webp",
+                ".gif",
+                ".bmp",
+                ".avif",
+                ".heic",
+            )
+        ):
+            return True
+        return "qpic.cn" in lower_url or "qlogo.cn" in lower_url
+
+    @classmethod
+    def _get_cached_content_nolock(cls, key: str) -> bytes | None:
+        entry = cls._content_cache.get(key)
+        if not entry:
+            return None
+        expire_at, content = entry
+        if expire_at <= time.monotonic():
+            cls._content_cache.pop(key, None)
+            return None
+        cls._content_cache.move_to_end(key)
+        return content
+
+    @classmethod
+    def _cleanup_content_cache_nolock(cls) -> None:
+        now = time.monotonic()
+        while cls._content_cache:
+            expire_at, _ = next(iter(cls._content_cache.values()))
+            if expire_at > now:
+                break
+            cls._content_cache.popitem(last=False)
+        while len(cls._content_cache) > cls._CONTENT_CACHE_MAX_ITEMS:
+            cls._content_cache.popitem(last=False)
+
+    @classmethod
+    async def _try_cache_content(cls, key: str, response: Response) -> None:
+        content = response.content
+        if not content or len(content) > cls._CONTENT_CACHE_MAX_BYTES:
+            return
+        content_type = response.headers.get("content-type", "").lower()
+        is_image = content_type.startswith("image/") or cls._is_probably_image_url(key)
+        if not is_image:
+            return
+        async with cls._content_cache_lock:
+            cls._content_cache[key] = (
+                time.monotonic() + cls._CONTENT_CACHE_TTL,
+                content,
+            )
+            cls._content_cache.move_to_end(key)
+            cls._cleanup_content_cache_nolock()
 
     @classmethod
     def _prepare_temporary_client_config(cls, client_kwargs: dict) -> dict:
@@ -378,7 +445,29 @@ class AsyncHttpx:
         cls, url: str | list[str], *, client: AsyncClient | None = None, **kwargs
     ) -> bytes:
         """获取指定 URL 的二进制内容。"""
-        res = await cls.get(url, client=client, **kwargs)
+        if not isinstance(url, str):
+            res = await cls.get(url, client=client, **kwargs)
+            return res.content
+
+        cache_key = url
+        async with cls._content_cache_lock:
+            cached = cls._get_cached_content_nolock(cache_key)
+            if cached is not None:
+                return cached
+            task = cls._content_inflight.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(cls.get(url, client=client, **kwargs))
+                cls._content_inflight[cache_key] = task
+
+                def _cleanup_inflight(
+                    _: asyncio.Task[Response], key: str = cache_key
+                ) -> None:
+                    cls._content_inflight.pop(key, None)
+
+                task.add_done_callback(_cleanup_inflight)
+
+        res = await task
+        await cls._try_cache_content(cache_key, res)
         return res.content
 
     @classmethod

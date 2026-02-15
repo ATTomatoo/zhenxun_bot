@@ -137,6 +137,18 @@ _PREFILTER_LAST_LOG = 0.0
 _CACHE_SWEEP_TASK: asyncio.Task | None = None
 
 
+def _plugin_module_aliases(plugin) -> set[str]:
+    aliases: set[str] = set()
+    for value in (
+        getattr(plugin, "name", None),
+        getattr(plugin, "module_name", None),
+    ):
+        text = (value or "").strip()
+        if text:
+            aliases.add(text)
+    return aliases
+
+
 class HookTraceRecorder:
     def __init__(self, start_time: float) -> None:
         self._start_time = start_time
@@ -302,10 +314,12 @@ async def _ensure_route_index():
                 continue
             if has_ambiguous:
                 continue
-            module = plugin.name
-            _ROUTE_MODULES_WITH_COMMANDS.add(module)
+            module_aliases = _plugin_module_aliases(plugin)
+            if not module_aliases:
+                continue
+            _ROUTE_MODULES_WITH_COMMANDS.update(module_aliases)
             for normalized in command_set:
-                _ROUTE_COMMAND_MAP.setdefault(normalized, set()).add(module)
+                _ROUTE_COMMAND_MAP.setdefault(normalized, set()).update(module_aliases)
                 _ROUTE_PREFIX_MAP.setdefault(normalized[0], set()).add(normalized)
         _ROUTE_INDEX_READY = True
 
@@ -346,7 +360,18 @@ def _matcher_module_name(matcher_cls: type[Matcher]) -> str:
     plugin = getattr(matcher_cls, "plugin", None)
     if not plugin:
         return ""
+    module_name = (getattr(plugin, "module_name", "") or "").strip()
+    if module_name:
+        return module_name
     return (getattr(plugin, "name", "") or "").strip()
+
+
+def _is_user_plugin_matcher(matcher_cls: type[Matcher]) -> bool:
+    plugin = getattr(matcher_cls, "plugin", None)
+    if not plugin:
+        return False
+    module_name = (getattr(plugin, "module_name", "") or "").strip()
+    return module_name.startswith("zhenxun.plugins.")
 
 
 def _is_command_matcher_class(matcher_cls: type[Matcher]) -> bool:
@@ -537,6 +562,10 @@ async def _check_matcher_prefilter(
     if not is_command_matcher:
         return False, None
 
+    # 保持与旧版本更一致的兼容行为：用户插件不过滤，避免命令提取误判。
+    if _is_user_plugin_matcher(matcher_cls):
+        return False, None
+
     text = _state_plain_text(state)
     if is_command_matcher and not text:
         text = _event_plain_text(event)
@@ -553,12 +582,6 @@ async def _check_matcher_prefilter(
         await _ensure_route_index()
 
     if module not in _ROUTE_MODULES_WITH_COMMANDS:
-        matcher_commands = _extract_matcher_command_literals(matcher_cls)
-        if matcher_commands:
-            for command in matcher_commands:
-                if _command_matches(text, command):
-                    return False, None
-            return True, "command_miss"
         return False, None
 
     route_modules = _get_route_modules_for_event(event, state)
