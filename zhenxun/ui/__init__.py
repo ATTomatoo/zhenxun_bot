@@ -22,6 +22,7 @@ from .models.components import (
 from .models.core import (
     CardData,
     DetailsData,
+    ImageCell,
     LayoutData,
     ListData,
     MarkdownData,
@@ -29,6 +30,7 @@ from .models.core import (
     RenderableComponent,
     TableData,
     TemplateComponent,
+    TextCell,
     TextData,
 )
 from .registry import component, create
@@ -420,7 +422,9 @@ async def render_full_result(
 
 __all__ = [
     "DetailsData",
+    "ImageCell",
     "ListData",
+    "TextCell",
     "alert",
     "avatar",
     "avatar_group",
