@@ -74,20 +74,26 @@ def _patch_playwright_env_check_once() -> None:
         return
 
     check_func = original_check
-    state = {"checked": False}
+    state: dict[str, Any] = {"checked": False, "result": None}
     check_lock: asyncio.Lock | None = None
 
-    async def _check_once(**kwargs: Any) -> None:
+    async def _check_once(**kwargs: Any) -> Any:
         nonlocal check_lock
         if state["checked"]:
-            return
+            if state["result"] is not None:
+                return state["result"]
+            return getattr(htmlrender_browser, "_browser", None)
         if check_lock is None:
             check_lock = asyncio.Lock()
         async with check_lock:
             if state["checked"]:
-                return
-            await check_func(**kwargs)
+                if state["result"] is not None:
+                    return state["result"]
+                return getattr(htmlrender_browser, "_browser", None)
+            result = await check_func(**kwargs)
             state["checked"] = True
+            state["result"] = result
+            return result
 
     setattr(htmlrender_browser, check_attr_name, _check_once)
     setattr(htmlrender_browser, "_zhenxun_check_once_patched", True)
