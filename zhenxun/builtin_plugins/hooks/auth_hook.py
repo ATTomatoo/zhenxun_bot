@@ -31,10 +31,8 @@ from .auth_checker import (
 _SKIP_AUTH_PLUGINS = {"chat_history", "chat_message"}
 _BOT_CONNECT_TS: float | None = None
 _AUTH_QUEUE_MAXSIZE = 200
-_AUTH_QUEUE: asyncio.Queue[
-    tuple[Matcher, Event, Bot, Uninfo, UniMsg | None]
-] = asyncio.Queue(
-    maxsize=_AUTH_QUEUE_MAXSIZE
+_AUTH_QUEUE: asyncio.Queue[tuple[Matcher, Event, Bot, Uninfo, UniMsg | None]] = (
+    asyncio.Queue(maxsize=_AUTH_QUEUE_MAXSIZE)
 )
 _AUTH_QUEUE_STARTED = False
 _AUTH_WORKERS: list[asyncio.Task] = []

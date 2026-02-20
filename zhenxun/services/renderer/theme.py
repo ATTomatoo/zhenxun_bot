@@ -429,9 +429,7 @@ class ThemeManager:
         """为独立模板创建一个专用的 asset loader。"""
 
         def asset_loader(asset_path: str) -> str:
-            clean_path = (
-                asset_path[2:] if asset_path.startswith("./") else asset_path
-            )
+            clean_path = asset_path[2:] if asset_path.startswith("./") else asset_path
             candidate_paths = [
                 local_base_path / asset_path,
                 local_base_path / clean_path,

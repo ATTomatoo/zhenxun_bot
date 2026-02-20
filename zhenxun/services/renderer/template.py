@@ -57,9 +57,7 @@ class RelativePathEnvironment(Environment):
         }
         自动归一化为标准 Jinja 语法，避免页面样式丢失。
         """
-        normalized_source = _LEGACY_INCLUDE_TAG_PATTERN.sub(
-            r"{% include \1 %}", source
-        )
+        normalized_source = _LEGACY_INCLUDE_TAG_PATTERN.sub(r"{% include \1 %}", source)
         return super().preprocess(normalized_source, name, filename)
 
 

@@ -28,9 +28,7 @@ async def _get_browser_instance() -> Any:
         browser_getter = getattr(htmlrender_browser, attr_name, None)
         if callable(browser_getter):
             return await _await_if_needed(browser_getter())
-    raise RuntimeError(
-        "nonebot_plugin_htmlrender.browser 未提供可用浏览器获取函数。"
-    )
+    raise RuntimeError("nonebot_plugin_htmlrender.browser 未提供可用浏览器获取函数。")
 
 
 async def _shutdown_browser_instance() -> None:
@@ -211,9 +209,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
             self._rss_baseline_bytes = current_rss
             return
 
-        threshold = (
-            self._rss_baseline_bytes + self._RSS_RECYCLE_HEADROOM_BYTES * 2
-        )
+        threshold = self._rss_baseline_bytes + self._RSS_RECYCLE_HEADROOM_BYTES * 2
         if current_rss >= threshold:
             self._rss_baseline_bytes = int(
                 self._rss_baseline_bytes * 0.9 + current_rss * 0.1
