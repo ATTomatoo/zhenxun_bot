@@ -93,7 +93,7 @@ async def _(bot_id: str | None = None) -> Result[QueryCount]:
 
 
 @router.get(
-    "get_fg_count",
+    "/get_fg_count",
     dependencies=[authentication()],
     response_model=Result[dict[str, int]],
     response_class=JSONResponse,

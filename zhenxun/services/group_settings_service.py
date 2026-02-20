@@ -8,6 +8,7 @@ from zhenxun.models.group_plugin_setting import GroupPluginSetting
 from zhenxun.services.cache import Cache
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
+from zhenxun.utils.enum import CacheType
 from zhenxun.utils.pydantic_compat import model_dump, model_validate, parse_as
 
 T = TypeVar("T", bound=BaseModel)
@@ -21,7 +22,14 @@ class GroupSettingsService:
 
     def __init__(self):
         self.dao = DataAccess(GroupPluginSetting)
-        self._cache = Cache[dict]("group_plugin_settings")
+        self._cache = Cache[dict[str, Any]](CacheType.GROUP_PLUGIN_SETTINGS_VIEW)
+
+    @staticmethod
+    def _build_cache_key(group_id: str, plugin_name: str) -> str:
+        return f"{group_id}:{plugin_name}"
+
+    async def _clear_merged_cache(self, group_id: str, plugin_name: str) -> None:
+        await self._cache.delete(self._build_cache_key(group_id, plugin_name))
 
     async def set(
         self, group_id: str, plugin_name: str, settings_model: BaseModel
@@ -44,6 +52,7 @@ class GroupSettingsService:
         )
 
         await self.dao.clear_cache(group_id=group_id, plugin_name=plugin_name)
+        await self._clear_merged_cache(group_id, plugin_name)
 
     async def set_key_value(
         self, group_id: str, plugin_name: str, key: str, value: Any
@@ -61,6 +70,7 @@ class GroupSettingsService:
         setting_entry.settings[key] = value
         await setting_entry.save(update_fields=["settings"])
         await self.dao.clear_cache(group_id=group_id, plugin_name=plugin_name)
+        await self._clear_merged_cache(group_id, plugin_name)
 
     async def reset_key(self, group_id: str, plugin_name: str, key: str) -> bool:
         """重置单个配置项"""
@@ -72,6 +82,7 @@ class GroupSettingsService:
             else:
                 await setting.save(update_fields=["settings"])
             await self.dao.clear_cache(group_id=group_id, plugin_name=plugin_name)
+            await self._clear_merged_cache(group_id, plugin_name)
             return True
         return False
 
@@ -111,6 +122,7 @@ class GroupSettingsService:
 
         if deleted_count > 0:
             await self.dao.clear_cache(group_id=group_id, plugin_name=plugin_name)
+            await self._clear_merged_cache(group_id, plugin_name)
             logger.debug(f"已重置插件 '{plugin_name}' 在群组 '{group_id}' 的配置。")
             return True
 
@@ -138,7 +150,7 @@ class GroupSettingsService:
             plugin_name: 插件的模块名。
             parse_model: (可选) Pydantic模型，用于解析和验证配置。
         """
-        cache_key = f"{group_id}:{plugin_name}"
+        cache_key = self._build_cache_key(group_id, plugin_name)
         cached_settings = await self._cache.get(cache_key)
         if cached_settings is not None:
             logger.debug(f"缓存命中: {cache_key}")
