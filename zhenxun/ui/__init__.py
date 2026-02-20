@@ -413,7 +413,7 @@ async def render_full_result(
         screenshot_engine=renderer_service._screenshot_engine,
         component=component,
         use_cache=use_cache,
-        render_options=kwargs,
+        render_options={**kwargs, "_keep_html_content": True},
     )
     return await renderer_service._render_component(context)
 

@@ -4,6 +4,7 @@
 提供一个统一的、带缓存的头像获取服务，支持多平台和可配置的过期策略。
 """
 
+from collections import OrderedDict
 import os
 from pathlib import Path
 import time
@@ -47,10 +48,12 @@ class AvatarService:
     一个集中式的头像缓存服务，提供L1（内存）和L2（文件）两级缓存。
     """
 
+    _MEMORY_CACHE_MAX_ITEMS = 2000
+
     def __init__(self):
         self.cache_path = (DATA_PATH / "cache" / "avatars").resolve()
         self.cache_path.mkdir(parents=True, exist_ok=True)
-        self._memory_cache: dict[str, Path] = {}
+        self._memory_cache: OrderedDict[str, Path] = OrderedDict()
 
     def _get_cache_path(self, platform: str, identifier: str) -> Path:
         """
@@ -79,8 +82,11 @@ class AvatarService:
 
         cache_key = f"{platform}-{identifier}"
         if not force_refresh and cache_key in self._memory_cache:
-            if self._memory_cache[cache_key].exists():
-                return self._memory_cache[cache_key]
+            cached_path = self._memory_cache[cache_key]
+            if cached_path.exists():
+                self._memory_cache.move_to_end(cache_key)
+                return cached_path
+            self._memory_cache.pop(cache_key, None)
 
         local_path = self._get_cache_path(platform, identifier)
         ttl_seconds = Config.get_config("avatar_cache", "TTL_DAYS", 7) * 86400
@@ -90,6 +96,9 @@ class AvatarService:
                 file_mtime = os.path.getmtime(local_path)
                 if time.time() - file_mtime < ttl_seconds:
                     self._memory_cache[cache_key] = local_path
+                    self._memory_cache.move_to_end(cache_key)
+                    while len(self._memory_cache) > self._MEMORY_CACHE_MAX_ITEMS:
+                        self._memory_cache.popitem(last=False)
                     return local_path
             except FileNotFoundError:
                 pass
@@ -102,6 +111,9 @@ class AvatarService:
 
         if await AsyncHttpx.download_file(avatar_url, local_path):
             self._memory_cache[cache_key] = local_path
+            self._memory_cache.move_to_end(cache_key)
+            while len(self._memory_cache) > self._MEMORY_CACHE_MAX_ITEMS:
+                self._memory_cache.popitem(last=False)
             return local_path
         else:
             logger.warning(f"下载头像失败: {avatar_url}", "AvatarService")
@@ -125,6 +137,22 @@ class AvatarService:
                         deleted_count += 1
                 except FileNotFoundError:
                     continue
+
+        if self._memory_cache:
+            stale_keys = []
+            for key, cached_path in self._memory_cache.items():
+                if not cached_path.exists():
+                    stale_keys.append(key)
+                    continue
+                try:
+                    if now - os.path.getmtime(cached_path) > ttl_seconds:
+                        stale_keys.append(key)
+                except OSError:
+                    stale_keys.append(key)
+            for key in stale_keys:
+                self._memory_cache.pop(key, None)
+            while len(self._memory_cache) > self._MEMORY_CACHE_MAX_ITEMS:
+                self._memory_cache.popitem(last=False)
 
         logger.info(
             f"头像缓存清理完成，共删除 {deleted_count} 个过期文件。", "AvatarService"

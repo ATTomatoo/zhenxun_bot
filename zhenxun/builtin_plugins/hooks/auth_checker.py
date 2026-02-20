@@ -135,27 +135,6 @@ _PREFILTER_STATS = {
 }
 _PREFILTER_LAST_LOG = 0.0
 _CACHE_SWEEP_TASK: asyncio.Task | None = None
-_BUILTIN_PLUGIN_PREFIX = "zhenxun.builtin_plugins."
-
-
-def _plugin_module_aliases(plugin) -> set[str]:
-    aliases: set[str] = set()
-    for value in (
-        getattr(plugin, "name", None),
-        getattr(plugin, "module_name", None),
-    ):
-        text = (value or "").strip()
-        if text:
-            aliases.add(text)
-    return aliases
-
-
-def _plugin_module_name(plugin) -> str:
-    return (getattr(plugin, "module_name", "") or "").strip()
-
-
-def _is_builtin_plugin_module(module_name: str) -> bool:
-    return module_name.startswith(_BUILTIN_PLUGIN_PREFIX)
 
 
 class HookTraceRecorder:
@@ -323,12 +302,10 @@ async def _ensure_route_index():
                 continue
             if has_ambiguous:
                 continue
-            module_aliases = _plugin_module_aliases(plugin)
-            if not module_aliases:
-                continue
-            _ROUTE_MODULES_WITH_COMMANDS.update(module_aliases)
+            module = plugin.name
+            _ROUTE_MODULES_WITH_COMMANDS.add(module)
             for normalized in command_set:
-                _ROUTE_COMMAND_MAP.setdefault(normalized, set()).update(module_aliases)
+                _ROUTE_COMMAND_MAP.setdefault(normalized, set()).add(module)
                 _ROUTE_PREFIX_MAP.setdefault(normalized[0], set()).add(normalized)
         _ROUTE_INDEX_READY = True
 
@@ -369,20 +346,7 @@ def _matcher_module_name(matcher_cls: type[Matcher]) -> str:
     plugin = getattr(matcher_cls, "plugin", None)
     if not plugin:
         return ""
-    module_name = (getattr(plugin, "module_name", "") or "").strip()
-    if module_name:
-        return module_name
     return (getattr(plugin, "name", "") or "").strip()
-
-
-def _is_user_plugin_matcher(matcher_cls: type[Matcher]) -> bool:
-    plugin = getattr(matcher_cls, "plugin", None)
-    if not plugin:
-        return False
-    module_name = _plugin_module_name(plugin)
-    # 兼容第三方/开箱等外部插件：只对本体内置插件启用严格路由预过滤
-    # module_name 为空时保守放行，避免因模块名不可用导致误判拦截。
-    return not module_name or not _is_builtin_plugin_module(module_name)
 
 
 def _is_command_matcher_class(matcher_cls: type[Matcher]) -> bool:
@@ -573,10 +537,6 @@ async def _check_matcher_prefilter(
     if not is_command_matcher:
         return False, None
 
-    # 保持与旧版本更一致的兼容行为：用户插件不过滤，避免命令提取误判。
-    if _is_user_plugin_matcher(matcher_cls):
-        return False, None
-
     text = _state_plain_text(state)
     if is_command_matcher and not text:
         text = _event_plain_text(event)
@@ -593,6 +553,12 @@ async def _check_matcher_prefilter(
         await _ensure_route_index()
 
     if module not in _ROUTE_MODULES_WITH_COMMANDS:
+        matcher_commands = _extract_matcher_command_literals(matcher_cls)
+        if matcher_commands:
+            for command in matcher_commands:
+                if _command_matches(text, command):
+                    return False, None
+            return True, "command_miss"
         return False, None
 
     route_modules = _get_route_modules_for_event(event, state)
@@ -1113,8 +1079,6 @@ async def route_precheck(
     module = matcher.plugin_name or ""
     if not module:
         return False
-    if _is_user_plugin_matcher(type(matcher)):
-        return False
     if _is_hidden_plugin(matcher):
         return False
     if not _is_command_matcher_class(type(matcher)):
@@ -1214,7 +1178,6 @@ async def auth(
         is_superuser = session.user.id in bot.config.superusers
     module = matcher.plugin_name or ""
     is_command_matcher = _is_command_matcher_class(type(matcher))
-    bypass_route_prefilter = _is_user_plugin_matcher(type(matcher))
     if event_cache is None:
         event_cache = _get_event_cache(event, session, entity)
     auth_allowed = None
@@ -1254,7 +1217,6 @@ async def auth(
             route_modules = await _get_route_context(text, event_cache)
         route_skip_checks = (
             is_command_matcher
-            and not bypass_route_prefilter
             and module in _ROUTE_MODULES_WITH_COMMANDS
             and module not in route_modules
         )
