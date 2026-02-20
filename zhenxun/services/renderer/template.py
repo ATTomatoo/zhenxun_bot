@@ -268,8 +268,12 @@ class TemplateFileRenderStrategy(RenderStrategy):
 
         template_dir = template_path.parent
         temp_loader = FileSystemLoader(str(template_dir))
-        temp_env = Environment(
-            loader=temp_loader,
+        base_loader = context.template_engine.env.loader
+        temp_env_loader = (
+            ChoiceLoader([temp_loader, base_loader]) if base_loader else temp_loader
+        )
+        temp_env = RelativePathEnvironment(
+            loader=temp_env_loader,
             enable_async=True,
             autoescape=select_autoescape(["html", "xml"]),
         )

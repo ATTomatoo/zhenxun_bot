@@ -429,9 +429,17 @@ class ThemeManager:
         """为独立模板创建一个专用的 asset loader。"""
 
         def asset_loader(asset_path: str) -> str:
-            full_path = local_base_path / asset_path
-            if full_path.exists():
-                return full_path.absolute().as_uri()
+            clean_path = (
+                asset_path[2:] if asset_path.startswith("./") else asset_path
+            )
+            candidate_paths = [
+                local_base_path / asset_path,
+                local_base_path / clean_path,
+                local_base_path / "assets" / clean_path,
+            ]
+            for full_path in candidate_paths:
+                if full_path.exists():
+                    return full_path.absolute().as_uri()
             return ""
 
         return asset_loader

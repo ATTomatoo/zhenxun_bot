@@ -10,6 +10,7 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun import ui
 from zhenxun.configs.config import BotConfig, Config
+from zhenxun.configs.path_config import THEMES_PATH
 from zhenxun.models.sign_user import SignUser
 from zhenxun.services import avatar_service
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
@@ -46,6 +47,39 @@ LG_MESSAGE = [
     "请尽早休息吧！",
     "不要熬夜啦！",
 ]
+
+
+def _get_sign_template_files() -> list[Path]:
+    theme_name = str(Config.get_config("UI", "THEME", "default") or "default")
+    files: list[Path] = []
+    theme_candidates = [theme_name]
+    if theme_name != "default":
+        theme_candidates.append("default")
+
+    for candidate in theme_candidates:
+        base = THEMES_PATH / candidate / "pages" / "builtin" / "sign"
+        for file_name in ("main.html", "style.css", "manifest.json"):
+            file_path = base / file_name
+            if file_path.exists():
+                files.append(file_path)
+    return files
+
+
+def _is_sign_card_cache_stale(card_file: Path) -> bool:
+    if not card_file.exists():
+        return False
+    try:
+        card_mtime = card_file.stat().st_mtime
+    except OSError:
+        return True
+
+    for template_file in _get_sign_template_files():
+        try:
+            if template_file.stat().st_mtime > card_mtime:
+                return True
+        except OSError:
+            continue
+    return False
 
 
 @PriorityLifecycle.on_startup(priority=5)
@@ -86,13 +120,17 @@ async def get_card(
     card_file = SIGN_TODAY_CARD_PATH / file_name
 
     if card_file.exists():
-        return card_file
+        if not _is_sign_card_cache_stale(card_file):
+            return card_file
+        card_file.unlink(missing_ok=True)
 
     if add_impression == -1:
         view_name = f"{user_id}_view_{date}.png"
         view_card_file = SIGN_TODAY_CARD_PATH / view_name
         if view_card_file.exists():
-            return view_card_file
+            if not _is_sign_card_cache_stale(view_card_file):
+                return view_card_file
+            view_card_file.unlink(missing_ok=True)
         is_card_view = True
 
     return await _generate_html_card(
@@ -171,7 +209,9 @@ async def _generate_html_card(
     card_file = SIGN_TODAY_CARD_PATH / file_name
 
     if card_file.exists():
-        return card_file
+        if not _is_sign_card_cache_stale(card_file):
+            return card_file
+        card_file.unlink(missing_ok=True)
 
     impression = float(user.impression)
     user_console = await user.user_console
