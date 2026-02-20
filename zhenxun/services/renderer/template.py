@@ -1,6 +1,7 @@
 from collections.abc import Callable
 import os
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING, Any
 
 from jinja2 import (
@@ -26,6 +27,11 @@ from zhenxun.utils.exception import RenderingError
 if TYPE_CHECKING:
     from .types import RenderContext
 
+_LEGACY_INCLUDE_TAG_PATTERN = re.compile(
+    r"\{\s*%\s*include\s+([\"'][^\"']+[\"'])\s*%\s*\}",
+    flags=re.IGNORECASE,
+)
+
 
 class RelativePathEnvironment(Environment):
     """
@@ -37,6 +43,24 @@ class RelativePathEnvironment(Environment):
             path = os.path.normpath(os.path.join(os.path.dirname(parent), template))
             return path.replace(os.path.sep, "/")
         return super().join_path(template, parent)
+
+    def preprocess(
+        self,
+        source: str,
+        name: str | None = None,
+        filename: str | None = None,
+    ) -> str:
+        """
+        兼容历史模板里的错误 include 语法:
+        {
+            % include './style.css' %
+        }
+        自动归一化为标准 Jinja 语法，避免页面样式丢失。
+        """
+        normalized_source = _LEGACY_INCLUDE_TAG_PATTERN.sub(
+            r"{% include \1 %}", source
+        )
+        return super().preprocess(normalized_source, name, filename)
 
 
 class JinjaTemplateEngine:

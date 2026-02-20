@@ -1,14 +1,15 @@
 import asyncio
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 import contextlib
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import time
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import nonebot_plugin_htmlrender.browser as htmlrender_browser
-from nonebot_plugin_htmlrender.browser import get_browser, shutdown_browser
 import psutil
 
 from zhenxun.services.log import logger
@@ -16,11 +17,63 @@ from zhenxun.services.log import logger
 from .types import BaseScreenshotEngine
 
 
+async def _await_if_needed(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await cast(Awaitable[Any], value)
+    return value
+
+
+async def _get_browser_instance() -> Any:
+    for attr_name in ("get_browser", "get_new_browser"):
+        browser_getter = getattr(htmlrender_browser, attr_name, None)
+        if callable(browser_getter):
+            return await _await_if_needed(browser_getter())
+    raise RuntimeError(
+        "nonebot_plugin_htmlrender.browser 未提供可用浏览器获取函数。"
+    )
+
+
+async def _shutdown_browser_instance() -> None:
+    for attr_name in ("shutdown_browser", "close_browser"):
+        shutdown_func = getattr(htmlrender_browser, attr_name, None)
+        if callable(shutdown_func):
+            await _await_if_needed(shutdown_func())
+            return
+
+    browser_obj = getattr(htmlrender_browser, "_browser", None)
+    close_func = getattr(browser_obj, "close", None) if browser_obj else None
+    if callable(close_func):
+        await _await_if_needed(close_func())
+        return
+
+    logger.debug(
+        "未找到 htmlrender 浏览器关闭函数，跳过 shutdown。",
+        "PlaywrightEngine",
+    )
+
+
 def _patch_playwright_env_check_once() -> None:
     if getattr(htmlrender_browser, "_zhenxun_check_once_patched", False):
         return
 
-    original_check = htmlrender_browser.check_playwright_env
+    original_check: Callable[..., Awaitable[Any]] | None = None
+    check_attr_name = ""
+    for attr_name in ("check_playwright_env", "check_browser_env"):
+        candidate = getattr(htmlrender_browser, attr_name, None)
+        if callable(candidate):
+            original_check = cast(Callable[..., Awaitable[Any]], candidate)
+            check_attr_name = attr_name
+            break
+
+    if original_check is None:
+        logger.debug(
+            "未找到 htmlrender 环境检查函数，跳过 check_once 补丁。",
+            "PlaywrightEngine",
+        )
+        setattr(htmlrender_browser, "_zhenxun_check_once_patched", True)
+        return
+
+    check_func = original_check
     state = {"checked": False}
     check_lock: asyncio.Lock | None = None
 
@@ -33,10 +86,10 @@ def _patch_playwright_env_check_once() -> None:
         async with check_lock:
             if state["checked"]:
                 return
-            await original_check(**kwargs)
+            await check_func(**kwargs)
             state["checked"] = True
 
-    htmlrender_browser.check_playwright_env = _check_once
+    setattr(htmlrender_browser, check_attr_name, _check_once)
     setattr(htmlrender_browser, "_zhenxun_check_once_patched", True)
 
 
@@ -100,6 +153,13 @@ class PlaywrightEngine(BaseScreenshotEngine):
         self._idle_recycle_task: asyncio.Task[None] | None = None
         self._closing = False
         self._process = psutil.Process()
+
+    @staticmethod
+    def _normalize_base_url(path: Path) -> str:
+        base_url = path.absolute().as_uri()
+        if not base_url.endswith("/"):
+            base_url += "/"
+        return base_url
 
     @staticmethod
     def _build_render_key(
@@ -201,7 +261,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
                 await idle_task
 
         await self._dispose_context_pool()
-        await shutdown_browser()
+        await _shutdown_browser_instance()
 
     async def _on_render_begin(self) -> None:
         async with self._state_lock:
@@ -279,7 +339,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
         template_path: str,
         render_options: dict[str, Any],
     ) -> bytes:
-        browser = await get_browser()
+        browser = await _get_browser_instance()
         page_options = self._build_page_options(render_options, pooled=False)
         page = await browser.new_page(**page_options)
         try:
@@ -303,7 +363,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
                 create_new = False
 
         if create_new:
-            browser = await get_browser()
+            browser = await _get_browser_instance()
             context = await browser.new_context(
                 viewport={"width": 800, "height": 10},
                 device_scale_factor=2,
@@ -399,7 +459,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
         async with self._recycle_lock:
             try:
                 await self._dispose_context_pool()
-                await shutdown_browser()
+                await _shutdown_browser_instance()
                 current_rss = self._get_current_rss()
                 if current_rss is not None:
                     self._update_rss_baseline_nolock(current_rss)
@@ -464,9 +524,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
         return result
 
     async def render(self, html: str, base_url_path: Path, **render_options) -> bytes:
-        base_url_for_browser = base_url_path.absolute().as_uri()
-        if not base_url_for_browser.endswith("/"):
-            base_url_for_browser += "/"
+        base_url_for_browser = self._normalize_base_url(base_url_path)
 
         final_render_options = {
             "viewport": {"width": 800, "height": 10},
