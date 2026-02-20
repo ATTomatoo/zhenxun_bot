@@ -44,6 +44,8 @@ __plugin_meta__ = PluginMetadata(
         commands=[
             Command(command="签到"),
             Command(command="我的签到"),
+            Command(command="好感度排行"),
+            Command(command="好感度总排行"),
             Command(command="签到排行"),
             Command(command="签到总排行"),
         ],
