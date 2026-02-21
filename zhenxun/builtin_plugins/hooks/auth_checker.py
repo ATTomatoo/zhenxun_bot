@@ -122,6 +122,7 @@ _CHECK_MATCHER_PATCHED = False
 _ORIGINAL_CHECK_AND_RUN_MATCHER: Callable[..., Awaitable[None]] | None = None
 _MATCHER_COMMAND_TYPE_CACHE: dict[type[Matcher], bool] = {}
 _MATCHER_COMMAND_LITERAL_CACHE: dict[type[Matcher], tuple[str, ...] | None] = {}
+_MATCHER_ALCONNA_SHORTCUT_CACHE: dict[type[Matcher], bool] = {}
 _CHECK_MATCHER_ROUTE_CACHE = CacheDict(
     "AUTH_MATCHER_ROUTE_CACHE", expire=MATCHER_ROUTE_PREFILTER_TTL
 )
@@ -506,6 +507,58 @@ def _extract_matcher_command_literals(
     return sorted_commands
 
 
+def _matcher_has_alconna_shortcuts(matcher_cls: type[Matcher]) -> bool:
+    cached = _MATCHER_ALCONNA_SHORTCUT_CACHE.get(matcher_cls)
+    if cached is not None:
+        return cached
+
+    has_shortcuts = False
+    rule = getattr(matcher_cls, "rule", None)
+    checkers = getattr(rule, "checkers", ()) or ()
+    for checker in checkers:
+        call = getattr(checker, "call", None)
+        if call is None:
+            continue
+        call_type = call.__class__
+        call_module = getattr(call_type, "__module__", "")
+        call_name = getattr(call_type, "__name__", "")
+        if not (
+            call_module.startswith("nonebot_plugin_alconna.rule")
+            and call_name == "AlconnaRule"
+        ):
+            continue
+
+        # Alconna matcher supports shortcut-based parsing (regex/fuzzy expansion).
+        # Route prefilter only knows literal command heads, so shortcut matchers
+        # must bypass strict route miss to avoid false negative skips.
+        command_ref = getattr(call, "command", None)
+        command = None
+        if callable(command_ref):
+            with contextlib.suppress(Exception):
+                command = command_ref()
+                if command is not None:
+                    get_shortcuts = getattr(command, "get_shortcuts", None)
+                    if callable(get_shortcuts):
+                        shortcuts = get_shortcuts()
+                        if shortcuts:
+                            has_shortcuts = True
+                            break
+        formatter = getattr(command, "formatter", None)
+        if formatter is not None:
+            with contextlib.suppress(Exception):
+                data = getattr(formatter, "data", None)
+                if isinstance(data, dict):
+                    for trace in data.values():
+                        if getattr(trace, "shortcuts", None):
+                            has_shortcuts = True
+                            break
+        if has_shortcuts:
+            break
+
+    _MATCHER_ALCONNA_SHORTCUT_CACHE[matcher_cls] = has_shortcuts
+    return has_shortcuts
+
+
 def _is_heavy_command_module(module: str) -> bool:
     normalized = module.strip().lower()
     if not normalized:
@@ -558,11 +611,15 @@ async def _check_matcher_prefilter(
             for command in matcher_commands:
                 if _command_matches(text, command):
                     return False, None
+            if _matcher_has_alconna_shortcuts(matcher_cls):
+                return False, None
             return True, "command_miss"
         return False, None
 
     route_modules = _get_route_modules_for_event(event, state)
     if module not in route_modules:
+        if _matcher_has_alconna_shortcuts(matcher_cls):
+            return False, None
         return True, "route_miss"
     return False, None
 
@@ -1092,6 +1149,8 @@ async def route_precheck(
     if route_modules is None:
         route_modules = await _get_route_context(text, event_cache)
     if module in _ROUTE_MODULES_WITH_COMMANDS and module not in route_modules:
+        if _matcher_has_alconna_shortcuts(type(matcher)):
+            return False
         if event_cache is not None:
             event_cache["route_skip"] = True
         return True
@@ -1219,6 +1278,7 @@ async def auth(
             is_command_matcher
             and module in _ROUTE_MODULES_WITH_COMMANDS
             and module not in route_modules
+            and not _matcher_has_alconna_shortcuts(type(matcher))
         )
         if route_skip_checks:
             if event_cache is not None:

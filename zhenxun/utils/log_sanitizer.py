@@ -15,6 +15,22 @@ def _truncate_base64_string(value: str, threshold: int = 256) -> str:
         prefix = next((p for p in prefixes if value.startswith(p)), "base64")
         return f"[{prefix}_data_omitted_len={len(value)}]"
 
+    # 清理嵌入在普通文本中的超长 base64/data URI，
+    # 例如: "声音 -> base64://AAAA..."
+    embedded_patterns = (
+        (re.compile(r"base64://[A-Za-z0-9+/=\s]{80,}"), "base64"),
+        (
+            re.compile(r"data:(?:image|video|audio)[^,]*,[A-Za-z0-9+/=\s]{80,}"),
+            "data_uri",
+        ),
+    )
+    for pattern, tag in embedded_patterns:
+        if pattern.search(value):
+            value = pattern.sub(
+                lambda m: f"[{tag}_data_omitted_len={len(m.group(0))}]",
+                value,
+            )
+
     if len(value) > 1000:
         return f"[long_string_omitted_len={len(value)}] {value[:20]}...{value[-20:]}"
 

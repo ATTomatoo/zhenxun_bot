@@ -11,6 +11,7 @@ from nonebot_plugin_session import Session
 from nonebot_plugin_uninfo import Session as uninfoSession
 
 from zhenxun.configs.path_config import LOG_PATH
+from zhenxun.utils.log_sanitizer import sanitize_for_logging
 
 driver = nonebot.get_driver()
 
@@ -47,6 +48,18 @@ class logger:
     TEMPLATE_PLATFORM = "平台[<u><m>{}</m></u>]"
     TEMPLATE_TARGET = "[Target]([<u><e>{}</e></u>])"
     SUCCESS_TEMPLATE = "[<u><c>{}</c></u>]: {} | 参数[{}] 返回: [<y>{}</y>]"
+
+    @staticmethod
+    def _to_safe_text(value: Any) -> str:
+        """对日志内容做安全序列化，避免超长 base64 等污染日志。"""
+        try:
+            value = sanitize_for_logging(value)
+        except Exception:
+            pass
+        try:
+            return str(value)
+        except Exception:
+            return repr(value)
 
     @classmethod
     def __parser_template(
@@ -110,11 +123,19 @@ class logger:
             platform = session.basic.get("scope")
 
         template = cls.__parser_template(
-            info, command, user_id, group_id, adapter, target, platform
+            cls._to_safe_text(info),
+            cls._to_safe_text(command) if command is not None else None,
+            user_id,
+            group_id,
+            cls._to_safe_text(adapter) if adapter is not None else None,
+            cls._to_safe_text(target) if target is not None else None,
+            cls._to_safe_text(platform) if platform is not None else None,
         )
 
         if e:
-            template += f" || 错误 <r>{type(e).__name__}: {e}</r>"
+            err_type = type(e).__name__
+            err_msg = cls._to_safe_text(e)
+            template += f" || 错误 <r>{err_type}: {err_msg}</r>"
 
         try:
             log_func = getattr(logger_.opt(colors=True), level)
