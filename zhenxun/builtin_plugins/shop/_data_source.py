@@ -534,12 +534,16 @@ class ShopManage:
             icon = None
             if prop.icon:
                 icon_path = ICON_PATH / prop.icon
-                icon = icon_path if icon_path.exists() else None
+                icon = (
+                    ImageCell(src=icon_path.absolute().as_uri(), width=45, height=45)
+                    if icon_path.exists()
+                    else None
+                )
 
             table_rows.append(
                 [
                     icon,
-                    i,
+                    TextCell(content=str(i)),
                     prop.goods_name,
                     user.props[prop_uuid],
                     prop.goods_description,
@@ -553,6 +557,8 @@ class ShopManage:
 
         table = ui.table(f"{name}的道具仓库", "通过 使用道具[ID/名称] 令道具生效")
         table.set_headers(column_name).add_rows(table_rows)
+        table.set_column_widths([70, 80, 150, 80, "auto"])
+        table.set_column_alignments(["center", "center", "left", "center", "left"])
         return await ui.render(table)
 
     @classmethod
