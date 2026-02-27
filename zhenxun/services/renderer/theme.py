@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import asyncio
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import inspect
@@ -313,8 +314,12 @@ class AssetResolutionService:
     def resolve_asset_uri(self, asset_path: str, current_template_name: str) -> str:
         hot_reload = Config.get_config("UI", "HOT_RELOAD", False)
         cache_key = (asset_path, current_template_name)
-        if not hot_reload and cache_key in self.theme_manager._asset_resolution_cache:
-            return self.theme_manager._asset_resolution_cache[cache_key]
+        if not hot_reload:
+            if cached_uri := self.theme_manager._get_lru_entry(
+                self.theme_manager._asset_resolution_cache,
+                cache_key,
+            ):
+                return cached_uri
         request = AssetRequest(
             asset_path=asset_path,
             template_name=current_template_name,
@@ -324,7 +329,7 @@ class AssetResolutionService:
             if result_path := resolver.resolve(request):
                 uri = result_path.absolute().as_uri()
                 if not hot_reload:
-                    self.theme_manager._asset_resolution_cache[cache_key] = uri
+                    self.theme_manager._set_asset_resolution_cache(cache_key, uri)
                 return uri
         logger.warning(
             f"资源文件未找到: '{asset_path}' (在 '{current_template_name}' 中)"
@@ -333,6 +338,10 @@ class AssetResolutionService:
 
 
 class ThemeManager:
+    _ASSET_RESOLUTION_CACHE_MAX = 2048
+    _GLOBAL_TEMPLATE_CACHE_MAX = 512
+    _COMPONENT_DEP_CACHE_MAX = 512
+
     def __init__(self):
         """
         主题管理器，负责UI主题的加载、解析和模板渲染。
@@ -347,11 +356,58 @@ class ThemeManager:
         self.current_theme_context: dict[str, Any] = {}
         self.current_default_palette: dict[str, Any] = {}
 
-        self._asset_resolution_cache: dict[tuple[str, str], str] = {}
-        self._global_template_cache: dict[str, str] = {}
-        self._component_dependency_cache: dict[
+        self._asset_resolution_cache: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._global_template_cache: OrderedDict[str, str] = OrderedDict()
+        self._component_dependency_cache: OrderedDict[
             tuple[type, str, str | None], ComponentDependency
-        ] = {}
+        ] = OrderedDict()
+
+    @staticmethod
+    def _get_lru_entry(cache: OrderedDict, key: Any) -> Any:
+        value = cache.get(key)
+        if value is not None:
+            cache.move_to_end(key)
+        return value
+
+    @staticmethod
+    def _set_lru_entry(
+        cache: OrderedDict,
+        key: Any,
+        value: Any,
+        max_items: int,
+    ) -> None:
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > max_items:
+            cache.popitem(last=False)
+
+    def _set_asset_resolution_cache(self, key: tuple[str, str], value: str) -> None:
+        self._set_lru_entry(
+            self._asset_resolution_cache,
+            key,
+            value,
+            self._ASSET_RESOLUTION_CACHE_MAX,
+        )
+
+    def _set_global_template_cache(self, key: str, value: str) -> None:
+        self._set_lru_entry(
+            self._global_template_cache,
+            key,
+            value,
+            self._GLOBAL_TEMPLATE_CACHE_MAX,
+        )
+
+    def _set_component_dependency_cache(
+        self,
+        key: tuple[type, str, str | None],
+        value: ComponentDependency,
+    ) -> None:
+        self._set_lru_entry(
+            self._component_dependency_cache,
+            key,
+            value,
+            self._COMPONENT_DEP_CACHE_MAX,
+        )
 
     def bind_template_engine(self, env: Environment):
         """绑定模板引擎环境，用于Manifest加载和asset解析"""
@@ -581,10 +637,12 @@ class ThemeManager:
         variant = getattr(component, "variant", None)
         cache_key = f"{component_path_base}::{variant or 'default'}"
 
-        if not hot_reload and (
-            cached_path := self._global_template_cache.get(cache_key)
-        ):
-            return cached_path
+        if not hot_reload:
+            if cached_path := self._get_lru_entry(
+                self._global_template_cache,
+                cache_key,
+            ):
+                return cached_path
 
         if not hot_reload and (
             cached_path := context.resolved_template_paths.get(cache_key)
@@ -636,7 +694,7 @@ class ThemeManager:
                 logger.debug(f"解析到模板路径: '{path}'")
                 if not hot_reload:
                     context.resolved_template_paths[cache_key] = path
-                    self._global_template_cache[cache_key] = path
+                    self._set_global_template_cache(cache_key, path)
                 return path
             except TemplateNotFound:
                 continue
@@ -737,7 +795,8 @@ class DependencyCollector:
 
         cached_dep = None
         if not hot_reload:
-            cached_dep = context.theme_manager._component_dependency_cache.get(
+            cached_dep = context.theme_manager._get_lru_entry(
+                context.theme_manager._component_dependency_cache,
                 cache_key
             )
 
@@ -804,7 +863,10 @@ class DependencyCollector:
             new_dep.asset_styles = component.get_required_styles()
 
             if not hot_reload:
-                context.theme_manager._component_dependency_cache[cache_key] = new_dep
+                context.theme_manager._set_component_dependency_cache(
+                    cache_key,
+                    new_dep,
+                )
 
             context.collected_inline_css.extend(cached_css_results)
             context.collected_scripts.update(new_dep.scripts)

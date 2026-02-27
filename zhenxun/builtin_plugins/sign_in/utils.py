@@ -323,7 +323,14 @@ async def _generate_html_card(
         "total_gold": total_gold,
     }
 
-    image_bytes = await ui.render_template("pages/builtin/sign", data=card_data)
+    image_bytes = await ui.render_template(
+        "pages/builtin/sign",
+        data=card_data,
+        clip_selector=".wrapper",
+        clip_padding=8,
+        disable_animations=True,
+        screenshot_scale="css",
+    )
 
     async with aiofiles.open(card_file, "wb") as f:
         await f.write(image_bytes)

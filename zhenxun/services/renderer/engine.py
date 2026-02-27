@@ -12,6 +12,7 @@ from typing import Any, ClassVar, cast
 import nonebot_plugin_htmlrender.browser as htmlrender_browser
 import psutil
 
+from zhenxun.configs.config import Config
 from zhenxun.services.log import logger
 
 from .types import BaseScreenshotEngine
@@ -32,16 +33,41 @@ async def _get_browser_instance() -> Any:
 
 
 async def _shutdown_browser_instance() -> None:
-    for attr_name in ("shutdown_browser", "close_browser"):
+    for attr_name in (
+        "shutdown_htmlrender",
+        "shutdown_browser",
+        "close_browser",
+        "close_htmlrender",
+    ):
         shutdown_func = getattr(htmlrender_browser, attr_name, None)
         if callable(shutdown_func):
-            await _await_if_needed(shutdown_func())
+            try:
+                await _await_if_needed(shutdown_func())
+            finally:
+                with contextlib.suppress(Exception):
+                    setattr(htmlrender_browser, "_browser", None)
+                with contextlib.suppress(Exception):
+                    setattr(htmlrender_browser, "_playwright", None)
             return
 
     browser_obj = getattr(htmlrender_browser, "_browser", None)
     close_func = getattr(browser_obj, "close", None) if browser_obj else None
     if callable(close_func):
-        await _await_if_needed(close_func())
+        with contextlib.suppress(Exception):
+            await _await_if_needed(close_func())
+
+    playwright_obj = getattr(htmlrender_browser, "_playwright", None)
+    stop_func = getattr(playwright_obj, "stop", None) if playwright_obj else None
+    if callable(stop_func):
+        with contextlib.suppress(Exception):
+            await _await_if_needed(stop_func())
+
+    with contextlib.suppress(Exception):
+        setattr(htmlrender_browser, "_browser", None)
+    with contextlib.suppress(Exception):
+        setattr(htmlrender_browser, "_playwright", None)
+
+    if callable(close_func) or callable(stop_func):
         return
 
     logger.debug(
@@ -75,22 +101,51 @@ def _patch_playwright_env_check_once() -> None:
     state: dict[str, Any] = {"checked": False, "result": None}
     check_lock: asyncio.Lock | None = None
 
+    def _is_browser_usable(browser_obj: Any) -> bool:
+        if browser_obj is None:
+            return False
+        is_connected = getattr(browser_obj, "is_connected", None)
+        if callable(is_connected):
+            with contextlib.suppress(Exception):
+                return bool(is_connected())
+        # 无法判断连接状态时，保守认为可用
+        return True
+
+    def _get_current_browser_candidate() -> Any:
+        current = state["result"]
+        if _is_browser_usable(current):
+            return current
+        fallback = getattr(htmlrender_browser, "_browser", None)
+        if _is_browser_usable(fallback):
+            return fallback
+        return None
+
     async def _check_once(**kwargs: Any) -> Any:
         nonlocal check_lock
         if state["checked"]:
-            if state["result"] is not None:
-                return state["result"]
-            return getattr(htmlrender_browser, "_browser", None)
+            cached_browser = _get_current_browser_candidate()
+            if cached_browser is not None:
+                return cached_browser
+            state["checked"] = False
+            state["result"] = None
+
         if check_lock is None:
             check_lock = asyncio.Lock()
         async with check_lock:
             if state["checked"]:
-                if state["result"] is not None:
-                    return state["result"]
-                return getattr(htmlrender_browser, "_browser", None)
+                cached_browser = _get_current_browser_candidate()
+                if cached_browser is not None:
+                    return cached_browser
+                state["checked"] = False
+                state["result"] = None
+
             result = await check_func(**kwargs)
             state["checked"] = True
             state["result"] = result
+
+            browser = _get_current_browser_candidate()
+            if browser is not None:
+                return browser
             return result
 
     setattr(htmlrender_browser, check_attr_name, _check_once)
@@ -102,6 +157,21 @@ class PlaywrightEngine(BaseScreenshotEngine):
 
     _MAX_CONCURRENT_RENDER = 2
     _CONTEXT_POOL_SIZE = 2
+    _PREWARM_CONTEXT_COUNT = 1
+    _SET_CONTENT_WAIT_UNTIL = "domcontentloaded"
+    _READY_STATE_TIMEOUT_MS = 2_000
+    _IMAGE_READY_TIMEOUT_MS = 1_800
+    _FONT_READY_TIMEOUT_MS = 1_200
+    _FULL_PAGE_VIEWPORT_MAX_HEIGHT = 4_096
+    _CLIP_PADDING_DEFAULT = 0
+    _DISABLE_ANIMATIONS_STYLE = """
+        *, *::before, *::after {
+            animation: none !important;
+            transition: none !important;
+            caret-color: transparent !important;
+            scroll-behavior: auto !important;
+        }
+    """
     _RECENT_RESULT_TTL_SECONDS = 1.5
     _RECENT_RESULT_MAX_ITEMS = 64
     _RSS_RECYCLE_MIN_THRESHOLD_BYTES = 700 * 1024 * 1024
@@ -142,6 +212,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
     def __init__(self):
         _patch_playwright_env_check_once()
         self._render_semaphore = asyncio.Semaphore(self._MAX_CONCURRENT_RENDER)
+        self._debug_console_log = bool(Config.get_config("UI", "DEBUG_MODE", False))
         self._state_lock = asyncio.Lock()
         self._recycle_lock = asyncio.Lock()
         self._active_renders = 0
@@ -198,9 +269,13 @@ class PlaywrightEngine(BaseScreenshotEngine):
         self._recent_results.move_to_end(key)
         return result
 
-    def _get_current_rss(self) -> int | None:
+    def _get_total_rss(self) -> int | None:
         try:
-            return self._process.memory_info().rss
+            total_rss = self._process.memory_info().rss
+            for child in self._process.children(recursive=True):
+                with contextlib.suppress(Exception):
+                    total_rss += child.memory_info().rss
+            return total_rss
         except Exception:
             return None
 
@@ -228,7 +303,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
             return
         if now - self._last_recycle_at < self._RECYCLE_COOLDOWN_SECONDS:
             return
-        current_rss = self._get_current_rss()
+        current_rss = self._get_total_rss()
         if current_rss is None:
             return
         threshold = self._get_dynamic_threshold_nolock(current_rss)
@@ -241,9 +316,10 @@ class PlaywrightEngine(BaseScreenshotEngine):
                 return
             self._closing = False
             self._last_render_finished_at = time.monotonic()
-            if current_rss := self._get_current_rss():
+            if current_rss := self._get_total_rss():
                 self._rss_baseline_bytes = current_rss
             self._idle_recycle_task = asyncio.create_task(self._idle_recycle_loop())
+        await self._prewarm_browser_and_pool()
 
     async def close(self) -> None:
         idle_task: asyncio.Task[None] | None = None
@@ -292,18 +368,27 @@ class PlaywrightEngine(BaseScreenshotEngine):
         options.pop("wait", None)
         options.pop("type", None)
         options.pop("quality", None)
+        options.pop("scale", None)
+        options.pop("screenshot_scale", None)
         options.pop("screenshot_timeout", None)
         options.pop("full_page", None)
+        options.pop("clip_selector", None)
+        options.pop("clip_padding", None)
+        options.pop("disable_animations", None)
         if pooled:
             options.pop("base_url", None)
         return options
 
     @staticmethod
     def _build_screenshot_options(render_options: dict[str, Any]) -> dict[str, Any]:
+        scale = render_options.get("screenshot_scale", render_options.get("scale"))
+        if scale not in ("css", "device"):
+            scale = None
         return {
             "full_page": bool(render_options.get("full_page", True)),
             "type": render_options.get("type", "png"),
             "quality": render_options.get("quality"),
+            "scale": scale,
             "timeout": render_options.get("screenshot_timeout", 30_000),
         }
 
@@ -313,6 +398,14 @@ class PlaywrightEngine(BaseScreenshotEngine):
         if isinstance(wait, int):
             return max(wait, 0)
         return 0
+
+    @staticmethod
+    def _coerce_non_negative_int(value: Any, default: int = 0) -> int:
+        try:
+            value_int = int(value)
+        except (TypeError, ValueError):
+            return default
+        return value_int if value_int >= 0 else default
 
     @classmethod
     def _should_use_context_pool(cls, render_options: dict[str, Any]) -> bool:
@@ -328,12 +421,157 @@ class PlaywrightEngine(BaseScreenshotEngine):
         template_path: str,
         render_options: dict[str, Any],
     ) -> bytes:
-        page.on("console", lambda msg: logger.debug(f"浏览器控制台: {msg.text}"))
-        await page.goto(template_path)
-        await page.set_content(html, wait_until="networkidle")
+        if self._debug_console_log:
+            page.on("console", lambda msg: logger.debug(f"浏览器控制台: {msg.text}"))
+        await page.goto(template_path, wait_until="domcontentloaded")
+        await page.set_content(html, wait_until=self._SET_CONTENT_WAIT_UNTIL)
+        if bool(render_options.get("disable_animations", False)):
+            await self._disable_page_animations(page)
+        await self._wait_for_visual_stability(page)
         if wait_ms := self._get_wait_timeout(render_options):
             await page.wait_for_timeout(wait_ms)
-        return await page.screenshot(**self._build_screenshot_options(render_options))
+        screenshot_options = self._build_screenshot_options(render_options)
+        clip_selector = render_options.get("clip_selector")
+        if isinstance(clip_selector, str) and clip_selector.strip():
+            if image_bytes := await self._capture_by_selector(
+                page,
+                selector=clip_selector.strip(),
+                screenshot_options=screenshot_options,
+                clip_padding=self._coerce_non_negative_int(
+                    render_options.get("clip_padding"),
+                    self._CLIP_PADDING_DEFAULT,
+                ),
+            ):
+                return image_bytes
+        await self._optimize_full_page_capture(page, screenshot_options)
+        return await page.screenshot(**screenshot_options)
+
+    async def _disable_page_animations(self, page: Any) -> None:
+        with contextlib.suppress(Exception):
+            await page.add_style_tag(content=self._DISABLE_ANIMATIONS_STYLE)
+
+    async def _capture_by_selector(
+        self,
+        page: Any,
+        selector: str,
+        screenshot_options: dict[str, Any],
+        clip_padding: int,
+    ) -> bytes | None:
+        element = await page.query_selector(selector)
+        if element is None:
+            return None
+
+        element_screenshot_options = {
+            "type": screenshot_options.get("type", "png"),
+            "quality": screenshot_options.get("quality"),
+            "timeout": screenshot_options.get("timeout", 30_000),
+        }
+        with contextlib.suppress(Exception):
+            box = await element.bounding_box()
+            if box and clip_padding > 0:
+                viewport = page.viewport_size or {}
+                width = int(viewport.get("width") or 0)
+                if width > 0:
+                    target_height = int(box["y"] + box["height"] + clip_padding)
+                    current_height = int(viewport.get("height") or 0)
+                    if target_height > current_height:
+                        await page.set_viewport_size(
+                            {
+                                "width": width,
+                                "height": min(
+                                    target_height,
+                                    self._FULL_PAGE_VIEWPORT_MAX_HEIGHT,
+                                ),
+                            }
+                        )
+
+        if clip_padding <= 0:
+            return await element.screenshot(**element_screenshot_options)
+
+        with contextlib.suppress(Exception):
+            clip_box = await element.bounding_box()
+            if clip_box is None:
+                return await element.screenshot(**element_screenshot_options)
+            clip = {
+                "x": max(clip_box["x"] - clip_padding, 0),
+                "y": max(clip_box["y"] - clip_padding, 0),
+                "width": clip_box["width"] + clip_padding * 2,
+                "height": clip_box["height"] + clip_padding * 2,
+            }
+            page_options = {
+                "type": screenshot_options.get("type", "png"),
+                "quality": screenshot_options.get("quality"),
+                "timeout": screenshot_options.get("timeout", 30_000),
+                "clip": clip,
+            }
+            return await page.screenshot(**page_options)
+
+        return await element.screenshot(**element_screenshot_options)
+
+    async def _wait_for_visual_stability(self, page: Any) -> None:
+        with contextlib.suppress(Exception):
+            await page.wait_for_function(
+                "() => document.readyState === 'complete'",
+                timeout=self._READY_STATE_TIMEOUT_MS,
+            )
+
+        with contextlib.suppress(Exception):
+            await page.wait_for_function(
+                "() => Array.from(document.images || []).every(img => img.complete)",
+                timeout=self._IMAGE_READY_TIMEOUT_MS,
+            )
+
+        with contextlib.suppress(Exception):
+            await page.evaluate(
+                """
+                async (timeoutMs) => {
+                    if (!document.fonts || !document.fonts.ready) return;
+                    await Promise.race([
+                        document.fonts.ready,
+                        new Promise(resolve => setTimeout(resolve, timeoutMs)),
+                    ]);
+                }
+                """,
+                self._FONT_READY_TIMEOUT_MS,
+            )
+
+    async def _optimize_full_page_capture(
+        self, page: Any, screenshot_options: dict[str, Any]
+    ) -> None:
+        if not bool(screenshot_options.get("full_page")):
+            return
+
+        viewport = page.viewport_size or {}
+        width = viewport.get("width")
+        if not isinstance(width, int) or width <= 0:
+            return
+
+        with contextlib.suppress(Exception):
+            content_height = await page.evaluate(
+                """
+                () => {
+                    const body = document.body;
+                    const doc = document.documentElement;
+                    const bodyHeight = body ? Math.max(
+                        body.scrollHeight,
+                        body.offsetHeight,
+                        body.clientHeight
+                    ) : 0;
+                    const docHeight = doc ? Math.max(
+                        doc.scrollHeight,
+                        doc.offsetHeight,
+                        doc.clientHeight
+                    ) : 0;
+                    return Math.ceil(Math.max(bodyHeight, docHeight, 10));
+                }
+                """
+            )
+            if (
+                isinstance(content_height, int)
+                and 10 <= content_height <= self._FULL_PAGE_VIEWPORT_MAX_HEIGHT
+            ):
+                await page.set_viewport_size({"width": width, "height": content_height})
+                screenshot_options["full_page"] = False
 
     async def _render_with_oneoff_page(
         self,
@@ -462,15 +700,64 @@ class PlaywrightEngine(BaseScreenshotEngine):
             try:
                 await self._dispose_context_pool()
                 await _shutdown_browser_instance()
-                current_rss = self._get_current_rss()
+                current_rss = self._get_total_rss()
                 if current_rss is not None:
                     self._update_rss_baseline_nolock(current_rss)
+                await self._prewarm_browser_and_pool()
                 logger.debug(
                     f"截图引擎触发回收({reason})，已重建浏览器实例。",
                     "PlaywrightEngine",
                 )
             except Exception as e:
                 logger.warning("浏览器实例重建失败。", "PlaywrightEngine", e=e)
+
+    async def _prewarm_browser_and_pool(self) -> None:
+        if self._closing:
+            return
+        try:
+            browser = await _get_browser_instance()
+        except Exception as e:
+            logger.warning("截图引擎浏览器预热失败。", "PlaywrightEngine", e=e)
+            return
+
+        for _ in range(self._PREWARM_CONTEXT_COUNT):
+            async with self._state_lock:
+                if self._closing:
+                    return
+                if len(self._all_contexts) >= self._CONTEXT_POOL_SIZE:
+                    return
+                if self._context_pool.qsize() >= self._PREWARM_CONTEXT_COUNT:
+                    return
+
+            context = None
+            try:
+                context = await browser.new_context(
+                    viewport={"width": 800, "height": 10},
+                    device_scale_factor=2,
+                )
+                page = await context.new_page()
+                await page.goto("about:blank", wait_until="domcontentloaded")
+                await page.set_content(
+                    "<html><body></body></html>",
+                    wait_until="domcontentloaded",
+                )
+                await page.close()
+            except Exception as e:
+                logger.warning("截图引擎上下文预热失败。", "PlaywrightEngine", e=e)
+                if context is not None:
+                    with contextlib.suppress(Exception):
+                        await context.close()
+                return
+
+            async with self._state_lock:
+                if self._closing:
+                    with contextlib.suppress(Exception):
+                        await context.close()
+                    return
+                if context in self._all_contexts:
+                    continue
+                self._all_contexts.add(context)
+                self._context_pool.put_nowait(context)
 
     async def _idle_recycle_loop(self) -> None:
         while True:
@@ -487,7 +774,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
                 idle_for = now - self._last_render_finished_at
                 if idle_for < self._IDLE_RECYCLE_SECONDS:
                     continue
-                current_rss = self._get_current_rss()
+                current_rss = self._get_total_rss()
                 if current_rss is None:
                     continue
                 threshold = self._get_dynamic_threshold_nolock(current_rss)

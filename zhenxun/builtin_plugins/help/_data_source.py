@@ -17,6 +17,7 @@ from zhenxun.services import (
     generate,
 )
 from zhenxun.services.log import logger
+from zhenxun.services.renderer.result_cache import RenderResultMemoryCache
 from zhenxun.ui.models import PluginMenuCategory, PluginMenuData
 from zhenxun.utils.common_utils import format_usage_for_markdown
 from zhenxun.utils.enum import BlockType, PluginType
@@ -28,6 +29,11 @@ random_bk_path = IMAGE_PATH / "background" / "help" / "simple_help"
 background = IMAGE_PATH / "background" / "0.png"
 
 driver = nonebot.get_driver()
+_HELP_MENU_IMAGE_CACHE = RenderResultMemoryCache(
+    ttl_seconds=300,
+    max_items=64,
+    max_total_bytes=64 * 1024 * 1024,
+)
 
 
 def _create_plugin_menu_item(
@@ -121,7 +127,25 @@ async def create_help_img(
         categories=categories_objects,
     )
 
-    return await ui.render(menu_data)
+    cache_payload = {
+        "self_id": session.self_id,
+        "group_id": group_id,
+        "is_detail": is_detail,
+        "theme": Config.get_config("UI", "THEME", "default"),
+        "menu_data": menu_data,
+    }
+    cache_key = RenderResultMemoryCache.build_key(cache_payload)
+    if cached_image := await _HELP_MENU_IMAGE_CACHE.get(cache_key):
+        return cached_image
+
+    image_bytes = await ui.render(
+        menu_data,
+        clip_selector=".wrapper",
+        clip_padding=20,
+        disable_animations=True,
+    )
+    await _HELP_MENU_IMAGE_CACHE.set(cache_key, image_bytes)
+    return image_bytes
 
 
 async def get_user_allow_help(user_id: str) -> list[PluginType]:

@@ -5,12 +5,19 @@ from nonebot.plugin import PluginMetadata
 from pydantic import BaseModel
 
 from zhenxun import ui
-from zhenxun.configs.config import BotConfig
+from zhenxun.configs.config import BotConfig, Config
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
+from zhenxun.services.renderer.result_cache import RenderResultMemoryCache
 from zhenxun.ui.models import HelpCategory, HelpItem, PluginHelpPageData
 from zhenxun.utils.common_utils import format_usage_for_markdown
 from zhenxun.utils.enum import PluginType
+
+_PLUGIN_HELP_IMAGE_CACHE = RenderResultMemoryCache(
+    ttl_seconds=300,
+    max_items=48,
+    max_total_bytes=48 * 1024 * 1024,
+)
 
 
 class PluginData(BaseModel):
@@ -111,6 +118,23 @@ async def create_plugin_help_image(
         categories=categories,
     )
 
-    image_bytes = await ui.render(page_data, use_cache=True)
+    cache_payload = {
+        "plugin_types": sorted([plugin_type.value for plugin_type in plugin_types]),
+        "page_title": page_title,
+        "theme": Config.get_config("UI", "THEME", "default"),
+        "page_data": page_data,
+    }
+    cache_key = RenderResultMemoryCache.build_key(cache_payload)
+    if cached_image := await _PLUGIN_HELP_IMAGE_CACHE.get(cache_key):
+        return cached_image
+
+    image_bytes = await ui.render(
+        page_data,
+        use_cache=True,
+        clip_selector=".container",
+        clip_padding=20,
+        disable_animations=True,
+    )
+    await _PLUGIN_HELP_IMAGE_CACHE.set(cache_key, image_bytes)
 
     return image_bytes
