@@ -796,8 +796,7 @@ class DependencyCollector:
         cached_dep = None
         if not hot_reload:
             cached_dep = context.theme_manager._get_lru_entry(
-                context.theme_manager._component_dependency_cache,
-                cache_key
+                context.theme_manager._component_dependency_cache, cache_key
             )
 
         if cached_dep:
