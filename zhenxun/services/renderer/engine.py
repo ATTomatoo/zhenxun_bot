@@ -163,6 +163,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
     _IMAGE_READY_TIMEOUT_MS = 1_800
     _FONT_READY_TIMEOUT_MS = 1_200
     _FULL_PAGE_VIEWPORT_MAX_HEIGHT = 4_096
+    _FULL_PAGE_VIEWPORT_MAX_WIDTH = 4_096
     _CLIP_PADDING_DEFAULT = 0
     _DISABLE_ANIMATIONS_STYLE = """
         *, *::before, *::after {
@@ -543,35 +544,71 @@ class PlaywrightEngine(BaseScreenshotEngine):
 
         viewport = page.viewport_size or {}
         width = viewport.get("width")
-        if not isinstance(width, int) or width <= 0:
+        height = viewport.get("height")
+        if (
+            not isinstance(width, int)
+            or width <= 0
+            or not isinstance(height, int)
+            or height <= 0
+        ):
             return
 
         with contextlib.suppress(Exception):
-            content_height = await page.evaluate(
+            content_size = await page.evaluate(
                 """
                 () => {
                     const body = document.body;
                     const doc = document.documentElement;
+                    const bodyWidth = body ? Math.max(
+                        body.scrollWidth,
+                        body.offsetWidth,
+                        body.clientWidth
+                    ) : 0;
                     const bodyHeight = body ? Math.max(
                         body.scrollHeight,
                         body.offsetHeight,
                         body.clientHeight
+                    ) : 0;
+                    const docWidth = doc ? Math.max(
+                        doc.scrollWidth,
+                        doc.offsetWidth,
+                        doc.clientWidth
                     ) : 0;
                     const docHeight = doc ? Math.max(
                         doc.scrollHeight,
                         doc.offsetHeight,
                         doc.clientHeight
                     ) : 0;
-                    return Math.ceil(Math.max(bodyHeight, docHeight, 10));
+                    return {
+                        width: Math.ceil(Math.max(bodyWidth, docWidth, 10)),
+                        height: Math.ceil(Math.max(bodyHeight, docHeight, 10)),
+                    };
                 }
                 """
             )
-            if (
-                isinstance(content_height, int)
-                and 10 <= content_height <= self._FULL_PAGE_VIEWPORT_MAX_HEIGHT
+            if not isinstance(content_size, dict):
+                return
+
+            content_width = content_size.get("width")
+            content_height = content_size.get("height")
+            if not isinstance(content_width, int) or not isinstance(
+                content_height, int
             ):
-                await page.set_viewport_size({"width": width, "height": content_height})
-                screenshot_options["full_page"] = False
+                return
+            if (
+                content_width < 10
+                or content_height < 10
+                or content_width > self._FULL_PAGE_VIEWPORT_MAX_WIDTH
+                or content_height > self._FULL_PAGE_VIEWPORT_MAX_HEIGHT
+            ):
+                return
+
+            target_width = max(width, content_width)
+            target_height = max(height, content_height)
+            await page.set_viewport_size(
+                {"width": target_width, "height": target_height}
+            )
+            screenshot_options["full_page"] = False
 
     async def _render_with_oneoff_page(
         self,
