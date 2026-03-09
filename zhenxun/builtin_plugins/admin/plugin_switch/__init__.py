@@ -89,6 +89,13 @@ __plugin_meta__ = PluginMetadata(
 )
 
 
+def _match_text(value: Match[str]) -> str:
+    if not value.available:
+        return ""
+    result = value.result
+    return result.strip() if isinstance(result, str) else ""
+
+
 @_status_matcher.assign("$main")
 async def _(
     bot: Bot,
@@ -120,7 +127,7 @@ async def _(
 ):
     if not all.result and not plugin_name.available:
         await MessageUtils.build_message("请输入功能/被动名称").finish(reply_to=True)
-    name = plugin_name.result.strip()
+    name = _match_text(plugin_name)
     if session.group:
         group_id = session.group.id
         """修改当前群组的数据"""
@@ -234,7 +241,7 @@ async def _(
 ):
     if not all.result and not plugin_name.available:
         await MessageUtils.build_message("请输入功能/被动名称").finish(reply_to=True)
-    name = plugin_name.result.strip()
+    name = _match_text(plugin_name)
     if session.group:
         group_id = session.group.id
         """修改当前群组的数据"""
