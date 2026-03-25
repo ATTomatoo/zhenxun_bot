@@ -15,6 +15,7 @@ async def auth_bot(
     bot_id: str,
     bot_data: BotConsole | BotSnapshot | None = None,
     skip_fetch: bool = False,
+    allow_sleep_bypass: bool = False,
 ):
     """bot层面的权限检查
 
@@ -33,7 +34,7 @@ async def auth_bot(
         if bot is None and not skip_fetch:
             bot = await BotMemoryCache.get(bot_id)
 
-        if not bot or not bot.status:
+        if (not bot or not bot.status) and not allow_sleep_bypass:
             raise SkipPluginException("Bot不存在或休眠中阻断权限检测...")
         if CommonUtils.format(plugin.module) in bot.block_plugins:
             raise SkipPluginException(
