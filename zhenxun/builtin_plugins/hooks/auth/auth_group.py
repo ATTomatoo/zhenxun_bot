@@ -1,5 +1,5 @@
-import time
 import re
+import time
 
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
@@ -10,9 +10,7 @@ from .config import LOGGER_COMMAND, WARNING_THRESHOLD, SwitchEnum
 from .exception import SkipPluginException
 
 _GROUP_WAKE_PATTERN = re.compile(r"^醒来$", re.IGNORECASE)
-_GROUP_WAKE_CANONICAL_PATTERN = re.compile(
-    r"^group-status\s+wake$", re.IGNORECASE
-)
+_GROUP_WAKE_CANONICAL_PATTERN = re.compile(r"^group-status\s+wake$", re.IGNORECASE)
 
 
 def _is_group_wake_command(plugin: PluginInfo, text: str) -> bool:
