@@ -48,6 +48,10 @@ dependencies = [
 redis = ["redis>=5"]
 postgresql = ["asyncpg>=0.20.0"]
 
+# 注册 bot 命令，让你能用 uv run bot 启动
+[project.scripts]
+bot = "bot:main"
+
 # uv 标准的开发环境依赖组
 [dependency-groups]
 dev = [

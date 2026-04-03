@@ -61,5 +61,8 @@ nonebot.load_plugins("zhenxun/builtin_plugins")
 nonebot.load_plugins("zhenxun/plugins")
 
 
-if __name__ == "__main__":
+def main():
     nonebot.run()
+
+if __name__ == "__main__":
+    main()
