@@ -1,222 +1,121 @@
-from datetime import datetime
 from pathlib import Path
-import uuid
 
 import nonebot
 from nonebot.adapters import Bot
-from nonebot.drivers import Driver
-from packaging.specifiers import SpecifierSet
-from packaging.version import Version
-from tortoise import Tortoise
-from tortoise.exceptions import IntegrityError, OperationalError
-import ujson as json
+from nonebot_plugin_apscheduler import scheduler
 
-from zhenxun.models.bot_connect_log import BotConnectLog
-from zhenxun.models.bot_console import BotConsole
-from zhenxun.models.goods_info import GoodsInfo
-from zhenxun.models.group_member_info import GroupInfoUser
-from zhenxun.models.sign_user import SignUser
-from zhenxun.models.user_console import UserConsole
+from zhenxun.configs.config import Config
+from zhenxun.models.chat_history import ChatHistory
+from zhenxun.models.group_console import GroupConsole
 from zhenxun.services.log import logger
-from zhenxun.utils.decorator.shop import shop_register
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
-from zhenxun.utils.manager.zhenxun_repo_manager import ZhenxunRepoManager
 from zhenxun.utils.platform import PlatformUtils
 
-driver: Driver = nonebot.get_driver()
+from .__init_cache import register_cache_types
+
+nonebot.load_plugins(str(Path(__file__).parent.resolve()))
 
 
-@driver.on_bot_connect
-async def _(bot: Bot):
-    logger.debug(f"Bot: {bot.self_id} 建立连接...")
-    await BotConnectLog.create(
-        bot_id=bot.self_id, platform=bot.adapter, connect_time=datetime.now(), type=1
-    )
-    if not await BotConsole.exists(bot_id=bot.self_id):
-        try:
-            await BotConsole.create(
-                bot_id=bot.self_id, platform=PlatformUtils.get_platform(bot)
-            )
-        except IntegrityError as e:
-            logger.warning(f"记录bot: {bot.self_id} 数据已存在...", e=e)
+driver = nonebot.get_driver()
 
 
-@driver.on_bot_disconnect
-async def _(bot: Bot):
-    logger.debug(f"Bot: {bot.self_id} 断开连接...")
-    try:
-        await BotConnectLog.create(
-            bot_id=bot.self_id,
-            platform=bot.adapter,
-            connect_time=datetime.now(),
-            type=0,
-        )
-    except Exception as e:
-        logger.warning(f"记录bot: {bot.self_id} 断开连接失败", e=e)
-
-
-SIGN_SQL = """
-SELECT user_id, checkin_count, add_probability, specify_probability, impression
-FROM (
-    SELECT
-        t1.user_id,
-        t1.checkin_count,
-        t1.add_probability,
-        t1.specify_probability,
-        t1.impression,
-        ROW_NUMBER() OVER(PARTITION BY t1.user_id ORDER BY t1.impression DESC) AS rn
-    FROM sign_group_users t1
-    INNER JOIN (
-        SELECT user_id, MAX(impression) AS max_impression
-        FROM sign_group_users
-        GROUP BY user_id
-    ) t2 ON t2.user_id = t1.user_id AND t2.max_impression = t1.impression
-) t
-WHERE rn = 1
-"""
-
-BAG_SQL = """
-select t1.user_id, t1.gold, t1.property
-from bag_users t1
-  join (
-    select user_id, max(t2.gold) as max_gold
-    from bag_users t2
-    group by user_id
-  ) t on t.user_id = t1.user_id and t.max_gold = t1.gold
-"""
+Config.add_plugin_config(
+    "auto_clean",
+    "CLEAN_CHAT_HISTORY",
+    True,
+    help="是否自动清理已退出群聊的聊天记录",
+    default_value=True,
+    type=bool,
+)
 
 
 @PriorityLifecycle.on_startup(priority=5)
 async def _():
-    try:
-        should_update = False
-        resource_path = ZhenxunRepoManager.config.RESOURCE_PATH
-        default_theme_path = resource_path / "themes" / "default"
-        version_file = resource_path / "__version__"
+    register_cache_types()
+    logger.info("缓存类型注册完成")
 
-        if (
-            not ZhenxunRepoManager.check_resources_exists()
-            or not default_theme_path.exists()
-            or not version_file.exists()
-        ):
-            should_update = True
-            logger.info(
-                "检测到资源文件(字体/主题/版本信息)缺失，准备进行初始化下载...",
-                "资源检查",
-            )
-        else:
-            spec_file = Path("resources.spec")
-            req_ver_str = ">=0.0.0"
-            if spec_file.exists():
-                try:
-                    for line in spec_file.read_text("utf-8").splitlines():
-                        if line.strip().startswith("require_resources_version:"):
-                            req_ver_str = line.split(":", 1)[1].strip().strip("'\"")
-                            break
-                except Exception:
-                    pass
 
-            local_ver_str = "0.0.0"
-            try:
-                content = version_file.read_text("utf-8").strip()
-                local_ver_str = (
-                    content.split(":", 1)[1].strip() if ":" in content else content
-                )
-            except Exception:
-                pass
+@driver.on_bot_connect
+async def _(bot: Bot):
+    """同步 Bot 已存在的群组到 GroupConsole，并清理已退出的群
 
-            if not SpecifierSet(req_ver_str).contains(Version(local_ver_str)):
-                should_update = True
-                logger.info(
-                    f"资源版本({local_ver_str})不满足要求({req_ver_str})，准备强制更新...",
-                    "资源检查",
-                )
+    参数:
+        bot: Bot
+    """
+    if PlatformUtils.get_platform(bot) != "qq":
+        return
 
-        if should_update:
-            await ZhenxunRepoManager.resources_update()
-    except Exception as e:
-        logger.error(f"资源检查或更新失败: {e}", "资源检查")
-    """签到与用户的数据迁移"""
-    if goods_list := await GoodsInfo.filter(uuid__isnull=True).all():
-        for goods in goods_list:
-            goods.uuid = uuid.uuid1()  # type: ignore
-        await GoodsInfo.bulk_update(goods_list, ["uuid"], 10)
-    await shop_register.load_register()
-    if (
-        not await UserConsole.annotate().count()
-        and not await SignUser.annotate().count()
-    ):
-        try:
-            group_user = []
-            try:
-                group_user = await GroupInfoUser.filter(uid__isnull=False).all()
-            except Exception as e:
-                logger.warning("获取GroupInfoUser数据uid失败...", e=e)
-            user2uid = {u.user_id: u.uid for u in group_user}
-            db = Tortoise.get_connection("default")
-            old_sign_list = await db.execute_query_dict(SIGN_SQL)
-            old_bag_list = await db.execute_query_dict(BAG_SQL)
-            goods = {
-                g["goods_name"]: g["uuid"]
-                for g in await GoodsInfo.annotate().values("goods_name", "uuid")
-            }
-            create_list = []
-            sign_id_list = []
-            max_uid = max(user2uid.values()) + 1 if user2uid else 0
-            for old_sign in old_sign_list:
-                sign_id_list.append(old_sign["user_id"])
-                if old_bag := [
-                    b for b in old_bag_list if b["user_id"] == old_sign["user_id"]
-                ]:
-                    old_bag = old_bag[0]
-                    property = json.loads(old_bag["property"])
-                    props = {}
-                    if property:
-                        for name, num in property.items():
-                            if name in goods:
-                                props[goods[name]] = num
-                    create_list.append(
-                        UserConsole(
-                            user_id=old_sign["user_id"],
-                            platform="qq",
-                            uid=user2uid.get(old_sign["user_id"]) or max_uid,
-                            props=props,
-                            gold=old_bag["gold"],
-                        )
-                    )
-                    if not user2uid.get(old_sign["user_id"]):
-                        max_uid += 1
-                else:
-                    create_list.append(
-                        UserConsole(
-                            user_id=old_sign["user_id"], platform="qq", uid=max_uid
-                        )
-                    )
-                    max_uid += 1
-            if create_list:
-                logger.info("开始迁移用户数据...")
-                await UserConsole.bulk_create(create_list, 10)
-                logger.info("迁移用户数据完成!")
-            create_list.clear()
-            uc_dict = {u.user_id: u for u in await UserConsole.all()}
-            for old_sign in old_sign_list:
-                user_console = uc_dict.get(
-                    old_sign["user_id"]
-                ) or await UserConsole.get_user(old_sign["user_id"], "qq")
-                create_list.append(
-                    SignUser(
-                        user_id=old_sign["user_id"],
-                        user_console=user_console,
-                        platform="qq",
-                        sign_count=old_sign["checkin_count"],
-                        impression=old_sign["impression"],
-                        add_probability=old_sign["add_probability"],
-                        specify_probability=old_sign["specify_probability"],
-                    )
-                )
-            if create_list:
-                logger.info("开始迁移签到数据...")
-                await SignUser.bulk_create(create_list, 10)
-                logger.info("迁移签到数据完成!")
-        except OperationalError as e:
-            logger.warning("数据迁移", e=e)
+    logger.debug(f"更新Bot: {bot.self_id} 的群认证...", "群认证同步")
+
+    # 实际在用的群列表（当前 bot 连接可见的群）
+    current_group_list, _ = await PlatformUtils.get_group_list(bot)
+    current_group_ids = {g.group_id for g in current_group_list}
+
+    # 数据库中已有的群记录
+    db_group_list: list[str] = await GroupConsole.all().values_list(
+        "group_id", flat=True
+    )  # pyright: ignore[reportAssignmentType]
+    db_group_ids = set(db_group_list)
+
+    # 需要创建的群（当前存在，但数据库中没有）
+    create_list = []
+    for group in current_group_list:
+        if group.group_id not in db_group_ids:
+            group.group_flag = 1
+            create_list.append(group)
+
+    if create_list:
+        await GroupConsole.bulk_create(create_list, 10)
+
+    if delete_ids := list(db_group_ids - current_group_ids):
+        deleted_count = await GroupConsole.filter(group_id__in=delete_ids).delete()
+    else:
+        deleted_count = 0
+    logger.info(
+        f"更新Bot: {bot.self_id} 的群认证完成，共创建 {len(create_list)} 条数据，"
+        f"删除 {deleted_count} 条已退出群组的数据...",
+        "群认证同步",
+    )
+
+    if Config.get_config("auto_clean", "CLEAN_CHAT_HISTORY"):
+        # 清理已退出群组的聊天记录
+        current_group_ids_list = [g.group_id for g in current_group_list]
+        scheduler.add_job(
+            clean_chat_history,
+            "cron",
+            hour=1,
+            minute=0,
+            args=(current_group_ids_list,),
+            id="clean_chat_history",
+            replace_existing=True,
+        )
+
+
+async def clean_chat_history(
+    group_ids: list[str],
+    max_delete: int = 2000,
+):
+    """清理已退出群组的聊天记录
+
+    为避免一次调用删除过多数据，单次调用最多删除 max_delete 条。
+    """
+    if not group_ids:
+        logger.warning("传入群组列表为空，跳过清理", "定时清理群组聊天记录")
+        return
+
+    # 只取最多 max_delete 条记录的 id，然后删除这些记录，避免一次删太多
+    ids = (
+        await ChatHistory.filter(group_id__not_in=group_ids)
+        .limit(max_delete)
+        .values_list("id", flat=True)
+    )
+    ids = list(ids)
+    if not ids:
+        logger.info(
+            f"群组数 {len(group_ids)}，无聊天记录可删除", "定时清理群组聊天记录"
+        )
+        return
+
+    await ChatHistory.filter(id__in=ids).delete()
+
+    logger.success(f"已清理 {len(ids)} 条已退出群组的聊天记录", "定时清理群组聊天记录")

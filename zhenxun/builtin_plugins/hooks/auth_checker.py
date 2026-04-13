@@ -721,6 +721,10 @@ async def _check_matcher_prefilter(
     return False, None
 
 
+_MATCHER_SEMAPHORE_TIMEOUT = 8.0
+_MAX_MATCHER_CACHE = 512
+
+
 async def _patched_check_and_run_matcher(
     Matcher: type[Matcher],
     bot: Bot,
@@ -749,12 +753,25 @@ async def _patched_check_and_run_matcher(
     }
     if _is_command_matcher_class(Matcher):
         module = _matcher_module_name(Matcher)
-        if _is_heavy_command_module(module):
-            async with HEAVY_COMMAND_SEMAPHORE:
-                await original(**kwargs)
-            return
-        async with COMMAND_MATCHER_SEMAPHORE:
+        sem = (
+            HEAVY_COMMAND_SEMAPHORE
+            if _is_heavy_command_module(module)
+            else COMMAND_MATCHER_SEMAPHORE
+        )
+        try:
+            await asyncio.wait_for(sem.acquire(), timeout=_MATCHER_SEMAPHORE_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"matcher semaphore acquire timeout for {module}, "
+                "executing without concurrency limit",
+                LOGGER_COMMAND,
+            )
             await original(**kwargs)
+            return
+        try:
+            await original(**kwargs)
+        finally:
+            sem.release()
         return
     await original(**kwargs)
 
@@ -820,6 +837,13 @@ async def _cache_sweep_loop() -> None:
             if EVENT_CACHE is not None:
                 _ = len(EVENT_CACHE)
             _ = len(_CHECK_MATCHER_ROUTE_CACHE)
+            for _mc in (
+                _MATCHER_COMMAND_TYPE_CACHE,
+                _MATCHER_COMMAND_LITERAL_CACHE,
+                _MATCHER_ALCONNA_SHORTCUT_CACHE,
+            ):
+                if len(_mc) > _MAX_MATCHER_CACHE:
+                    _mc.clear()
 
 
 async def start_auth_runtime_tasks() -> None:
@@ -1167,7 +1191,16 @@ async def time_hook(coro, name, recorder: HookTraceRecorder | None = None):
 async def _enter_hooks_section():
     """尝试获取全局信号量并更新计数器，超时则抛出 PermissionExemption。"""
     global HOOKS_ACTIVE_COUNT
-    await HOOKS_SEMAPHORE.acquire()
+    try:
+        await asyncio.wait_for(
+            HOOKS_SEMAPHORE.acquire(), timeout=TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "hooks semaphore acquire timeout, allowing pass",
+            LOGGER_COMMAND,
+        )
+        raise PermissionExemption("hooks semaphore timeout, allow pass")
     async with HOOKS_ACTIVE_LOCK:
         HOOKS_ACTIVE_COUNT += 1
         _debug_log(
