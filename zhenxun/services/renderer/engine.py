@@ -477,13 +477,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
                     current_height = int(viewport.get("height") or 0)
                     if target_height > current_height:
                         await page.set_viewport_size(
-                            {
-                                "width": width,
-                                "height": min(
-                                    target_height,
-                                    self._FULL_PAGE_VIEWPORT_MAX_HEIGHT,
-                                ),
-                            }
+                            {"width": width, "height": target_height}
                         )
 
         if clip_padding <= 0:
@@ -595,15 +589,10 @@ class PlaywrightEngine(BaseScreenshotEngine):
                 content_height, int
             ):
                 return
-            if (
-                content_width < 10
-                or content_height < 10
-                or content_width > self._FULL_PAGE_VIEWPORT_MAX_WIDTH
-                or content_height > self._FULL_PAGE_VIEWPORT_MAX_HEIGHT
-            ):
+            if content_width < 10 or content_height < 10:
                 return
 
-            target_width = max(width, content_width)
+            target_width = min(max(width, content_width), self._FULL_PAGE_VIEWPORT_MAX_WIDTH)
             target_height = max(height, content_height)
             await page.set_viewport_size(
                 {"width": target_width, "height": target_height}
