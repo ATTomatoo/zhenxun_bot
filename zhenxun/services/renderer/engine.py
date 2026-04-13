@@ -1,6 +1,6 @@
 import asyncio
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 import contextlib
 import hashlib
 import inspect
@@ -155,9 +155,9 @@ def _patch_playwright_env_check_once() -> None:
 class PlaywrightEngine(BaseScreenshotEngine):
     """使用 nonebot-plugin-htmlrender 实现的截图引擎。"""
 
-    _MAX_CONCURRENT_RENDER = 2
-    _CONTEXT_POOL_SIZE = 2
-    _PREWARM_CONTEXT_COUNT = 1
+    _MAX_CONCURRENT_RENDER = 4
+    _CONTEXT_POOL_SIZE = 4
+    _PREWARM_CONTEXT_COUNT = 2
     _SET_CONTENT_WAIT_UNTIL = "domcontentloaded"
     _READY_STATE_TIMEOUT_MS = 2_000
     _IMAGE_READY_TIMEOUT_MS = 1_800
@@ -183,7 +183,6 @@ class PlaywrightEngine(BaseScreenshotEngine):
     _IDLE_CHECK_INTERVAL_SECONDS = 15
     _IDLE_RECYCLE_SECONDS = 180
     _POOL_UNSAFE_OPTION_KEYS: ClassVar[set[str]] = {
-        "device_scale_factor",
         "color_scheme",
         "extra_http_headers",
         "forced_colors",
@@ -209,6 +208,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
         "timezone_id",
         "user_agent",
     }
+    _POOL_DEVICE_SCALE_FACTOR = 2
 
     def __init__(self):
         _patch_playwright_env_check_once()
@@ -378,6 +378,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
         options.pop("disable_animations", None)
         if pooled:
             options.pop("base_url", None)
+            options.pop("device_scale_factor", None)
         return options
 
     @staticmethod
@@ -413,6 +414,9 @@ class PlaywrightEngine(BaseScreenshotEngine):
         for key in cls._POOL_UNSAFE_OPTION_KEYS:
             if key in render_options:
                 return False
+        dsf = render_options.get("device_scale_factor")
+        if dsf is not None and dsf != cls._POOL_DEVICE_SCALE_FACTOR:
+            return False
         return True
 
     async def _render_with_page(
@@ -424,7 +428,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
     ) -> bytes:
         if self._debug_console_log:
             page.on("console", lambda msg: logger.debug(f"浏览器控制台: {msg.text}"))
-        await page.goto(template_path, wait_until="domcontentloaded")
+        await page.goto(template_path, wait_until="commit")
         await page.set_content(html, wait_until=self._SET_CONTENT_WAIT_UNTIL)
         if bool(render_options.get("disable_animations", False)):
             await self._disable_page_animations(page)
@@ -504,18 +508,77 @@ class PlaywrightEngine(BaseScreenshotEngine):
         return await element.screenshot(**element_screenshot_options)
 
     async def _wait_for_visual_stability(self, page: Any) -> None:
+        # 先做一次快速预检，判断页面是否有外部图片和自定义字体
+        resource_hints: dict[str, bool] | None = None
+        with contextlib.suppress(Exception):
+            resource_hints = await page.evaluate(
+                """
+                () => {
+                    const imgs = document.images || [];
+                    let hasUnloadedImages = false;
+                    for (let i = 0; i < imgs.length; i++) {
+                        if (!imgs[i].complete) { hasUnloadedImages = true; break; }
+                    }
+                    const hasCustomFonts = !!(
+                        document.fonts && document.fonts.size > 0
+                    );
+                    return {
+                        ready: document.readyState === 'complete',
+                        images: hasUnloadedImages,
+                        fonts: hasCustomFonts,
+                    };
+                }
+                """
+            )
+
+        # 如果预检已知全部就绪，直接返回
+        if (
+            isinstance(resource_hints, dict)
+            and resource_hints.get("ready") is True
+            and resource_hints.get("images") is not True
+            and resource_hints.get("fonts") is not True
+        ):
+            return
+
+        # 对需要的等待项并行执行
+        waiters: list[Coroutine[Any, Any, None]] = []
+
+        need_ready = not (
+            isinstance(resource_hints, dict)
+            and resource_hints.get("ready") is True
+        )
+        need_images = not isinstance(resource_hints, dict) or resource_hints.get(
+            "images"
+        ) is True
+        need_fonts = not isinstance(resource_hints, dict) or resource_hints.get(
+            "fonts"
+        ) is True
+
+        if need_ready:
+            waiters.append(self._wait_ready_state(page))
+        if need_images:
+            waiters.append(self._wait_images_loaded(page))
+        if need_fonts:
+            waiters.append(self._wait_fonts_ready(page))
+
+        if waiters:
+            await asyncio.gather(*waiters)
+
+    async def _wait_ready_state(self, page: Any) -> None:
         with contextlib.suppress(Exception):
             await page.wait_for_function(
                 "() => document.readyState === 'complete'",
                 timeout=self._READY_STATE_TIMEOUT_MS,
             )
 
+    async def _wait_images_loaded(self, page: Any) -> None:
         with contextlib.suppress(Exception):
             await page.wait_for_function(
                 "() => Array.from(document.images || []).every(img => img.complete)",
                 timeout=self._IMAGE_READY_TIMEOUT_MS,
             )
 
+    async def _wait_fonts_ready(self, page: Any) -> None:
         with contextlib.suppress(Exception):
             await page.evaluate(
                 """
