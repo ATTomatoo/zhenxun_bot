@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import nonebot
 from nonebot.adapters import Bot
 from nonebot_plugin_apscheduler import scheduler
@@ -12,8 +10,6 @@ from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 from zhenxun.utils.platform import PlatformUtils
 
 from .init.__init_cache import register_cache_types
-
-nonebot.load_plugins(str(Path(__file__).parent.resolve()))
 
 
 driver = nonebot.get_driver()
