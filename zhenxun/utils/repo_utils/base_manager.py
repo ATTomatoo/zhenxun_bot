@@ -261,9 +261,7 @@ class BaseRepoManager(ABC):
             # 检查本地目录是否存在
             if not await AsyncPath(local_path).exists():
                 # 如果不存在，则克隆仓库
-                logger.info(
-                    f"正在克隆仓库 {repo_url}，请耐心等待...", LOG_COMMAND
-                )
+                logger.info(f"正在克隆仓库 {repo_url}，请耐心等待...", LOG_COMMAND)
                 success, _stdout, stderr = await run_git_command(
                     f"clone --progress -b {branch} {repo_url} {local_path}"
                 )
