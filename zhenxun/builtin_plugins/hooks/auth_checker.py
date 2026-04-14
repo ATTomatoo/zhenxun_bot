@@ -52,8 +52,6 @@ from .auth.exception import (
 
 AUTH_HOOKS_CONCURRENCY_LIMIT = 5
 AUTH_DB_CONCURRENCY_LIMIT = 6
-AUTH_PLUGIN_CACHE_TTL = 30
-AUTH_USER_CACHE_TTL = 5
 AUTH_EVENT_CACHE_TTL = 2
 
 
@@ -75,17 +73,6 @@ CIRCUIT_RESET_TIME = 300  # 5分钟
 HOOKS_CONCURRENCY_LIMIT = AUTH_HOOKS_CONCURRENCY_LIMIT
 DB_CONCURRENCY_LIMIT = AUTH_DB_CONCURRENCY_LIMIT
 
-PLUGIN_CACHE_TTL = AUTH_PLUGIN_CACHE_TTL
-USER_CACHE_TTL = AUTH_USER_CACHE_TTL
-
-PLUGIN_CACHE = (
-    CacheDict("AUTH_PLUGIN_CACHE", expire=PLUGIN_CACHE_TTL)
-    if PLUGIN_CACHE_TTL > 0
-    else None
-)
-USER_CACHE = (
-    CacheDict("AUTH_USER_CACHE", expire=USER_CACHE_TTL) if USER_CACHE_TTL > 0 else None
-)
 EVENT_CACHE_TTL = AUTH_EVENT_CACHE_TTL
 EVENT_CACHE = (
     CacheDict("AUTH_EVENT_CACHE", expire=EVENT_CACHE_TTL)
@@ -110,14 +97,12 @@ HEAVY_COMMAND_MODULES = frozenset({"shop", "sign_in"})
 
 # 全局信号量与计数器
 HOOKS_ACTIVE_COUNT = 0
-HOOKS_ACTIVE_LOCK = asyncio.Lock()
 HOOKS_SEMAPHORE = asyncio.Semaphore(HOOKS_CONCURRENCY_LIMIT)
 COMMAND_MATCHER_SEMAPHORE = asyncio.Semaphore(COMMAND_MATCHER_CONCURRENCY)
 HEAVY_COMMAND_SEMAPHORE = asyncio.Semaphore(HEAVY_COMMAND_CONCURRENCY)
 
 DB_SEMAPHORE = asyncio.Semaphore(DB_CONCURRENCY_LIMIT)
 DB_ACTIVE_COUNT = 0
-DB_ACTIVE_LOCK = asyncio.Lock()
 _CHECK_MATCHER_PATCHED = False
 _ORIGINAL_CHECK_AND_RUN_MATCHER: Callable[..., Awaitable[None]] | None = None
 _MATCHER_COMMAND_TYPE_CACHE: dict[type[Matcher], bool] = {}
@@ -169,20 +154,6 @@ class HookTraceRecorder:
 
     def snapshot(self) -> dict[str, str]:
         return self._data if self._enabled else {}
-
-
-def _cache_get(cache: CacheDict | None, key: str):
-    if not cache:
-        return None
-    try:
-        return cache[key]
-    except KeyError:
-        return None
-
-
-def _cache_set(cache: CacheDict | None, key: str, value):
-    if cache:
-        cache[key] = value
 
 
 def _debug_log(message: str, *args, **kwargs) -> None:
@@ -881,19 +852,13 @@ async def _has_limits_cached(module: str, event_cache: dict | None) -> bool:
 async def _db_section():
     global DB_ACTIVE_COUNT
     await DB_SEMAPHORE.acquire()
-    async with DB_ACTIVE_LOCK:
-        DB_ACTIVE_COUNT += 1
-        _debug_log(f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND)
+    DB_ACTIVE_COUNT += 1
     try:
         yield
     finally:
         with contextlib.suppress(Exception):
             DB_SEMAPHORE.release()
-        async with DB_ACTIVE_LOCK:
-            DB_ACTIVE_COUNT = max(DB_ACTIVE_COUNT - 1, 0)
-            _debug_log(
-                f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND
-            )
+        DB_ACTIVE_COUNT = max(DB_ACTIVE_COUNT - 1, 0)
 
 
 async def _get_group_cached(entity, event_cache) -> GroupSnapshot | None:
@@ -1201,15 +1166,7 @@ async def _enter_hooks_section():
             LOGGER_COMMAND,
         )
         raise PermissionExemption("hooks semaphore timeout, allow pass")
-    async with HOOKS_ACTIVE_LOCK:
-        HOOKS_ACTIVE_COUNT += 1
-        _debug_log(
-            (
-                "当前并发权限检查数量: "
-                f"{HOOKS_ACTIVE_COUNT}, limit={HOOKS_CONCURRENCY_LIMIT}"
-            ),
-            LOGGER_COMMAND,
-        )
+    HOOKS_ACTIVE_COUNT += 1
 
 
 async def _leave_hooks_section():
@@ -1217,15 +1174,7 @@ async def _leave_hooks_section():
     global HOOKS_ACTIVE_COUNT
     with contextlib.suppress(Exception):
         HOOKS_SEMAPHORE.release()
-    async with HOOKS_ACTIVE_LOCK:
-        HOOKS_ACTIVE_COUNT = max(HOOKS_ACTIVE_COUNT - 1, 0)
-        _debug_log(
-            (
-                "当前并发权限检查数量: "
-                f"{HOOKS_ACTIVE_COUNT}, limit={HOOKS_CONCURRENCY_LIMIT}"
-            ),
-            LOGGER_COMMAND,
-        )
+    HOOKS_ACTIVE_COUNT = max(HOOKS_ACTIVE_COUNT - 1, 0)
 
 
 async def auth_ban_fast(
@@ -1316,6 +1265,12 @@ async def auth_precheck(
         await LevelUserMemoryCache.ensure_fresh()
         levels = await LevelUserMemoryCache.get_levels(session.user.id, entity.group_id)
         await auth_admin(plugin, session, cached_levels=levels)
+        # 缓存 admin 检查结果到 event_cache，避免 auth() 重复执行
+        event_cache = _get_event_cache(event, session, entity)
+        if event_cache is not None:
+            event_cache["admin_levels"] = levels
+            event_cache["admin_timeout"] = False
+            event_cache["admin_precheck_done"] = True
 
 
 async def _call_auth_ban_compat(
@@ -1454,19 +1409,26 @@ async def auth(
                 elif plugin.plugin_type == PluginType.SUPERUSER:
                     raise SkipPluginException("超级管理员权限不足...")
             if not admin_checked_pre:
-                await LevelUserMemoryCache.ensure_fresh()
-                admin_levels = None
-                admin_timeout = False
-                if event_cache is not None:
-                    admin_levels, admin_timeout = await _get_admin_levels_cached(
-                        session, entity, event_cache
-                    )
-                if admin_timeout:
-                    hook_recorder.set("auth_admin", "timeout")
+                if (
+                    event_cache is not None
+                    and event_cache.get("admin_precheck_done")
+                ):
+                    hook_recorder.set("auth_admin", "precheck")
+                    admin_checked_pre = True
                 else:
-                    admin_start = time.time()
-                    await auth_admin(plugin, session, cached_levels=admin_levels)
-                    hook_recorder.set(
+                    await LevelUserMemoryCache.ensure_fresh()
+                    admin_levels = None
+                    admin_timeout = False
+                    if event_cache is not None:
+                        admin_levels, admin_timeout = await _get_admin_levels_cached(
+                            session, entity, event_cache
+                        )
+                    if admin_timeout:
+                        hook_recorder.set("auth_admin", "timeout")
+                    else:
+                        admin_start = time.time()
+                        await auth_admin(plugin, session, cached_levels=admin_levels)
+                        hook_recorder.set(
                         "auth_admin", f"{time.time() - admin_start:.3f}s(pre)"
                     )
                 admin_checked_pre = True
@@ -1474,31 +1436,15 @@ async def auth(
         ban_cache_state = None
         if event_cache is not None:
             ban_cache_state = event_cache.get("ban_state")
-        if skip_ban:
-            if ban_cache_state is True:
-                hook_recorder.set("auth_ban", "cached")
-                raise SkipPluginException("user or group banned (cached)")
-            if ban_cache_state is None:
-                ban_start = time.time()
-                try:
-                    await _call_auth_ban_compat(
-                        matcher, bot, session, plugin, entity=entity
-                    )
-                    hook_recorder.set("auth_ban", f"{time.time() - ban_start:.3f}s")
-                    if event_cache is not None:
-                        event_cache["ban_state"] = False
-                except SkipPluginException:
-                    hook_recorder.set("auth_ban", f"{time.time() - ban_start:.3f}s")
-                    if event_cache is not None:
-                        event_cache["ban_state"] = True
-                    raise
-            else:
+        if ban_cache_state is True:
+            hook_recorder.set("auth_ban", "cached")
+            raise SkipPluginException("user or group banned (cached)")
+        if ban_cache_state is False:
+            hook_recorder.set("auth_ban", "cached")
+        elif ban_cache_state is None:
+            if skip_ban:
                 hook_recorder.set("auth_ban", "skipped")
-        else:
-            if ban_cache_state is True:
-                hook_recorder.set("auth_ban", "cached")
-                raise SkipPluginException("user or group banned (cached)")
-            if ban_cache_state is None:
+            else:
                 ban_start = time.time()
                 try:
                     await _call_auth_ban_compat(
@@ -1512,8 +1458,6 @@ async def auth(
                     if event_cache is not None:
                         event_cache["ban_state"] = True
                     raise
-            else:
-                hook_recorder.set("auth_ban", "cached")
 
         # 获取插件费用
         if not route_skip_checks and plugin.cost_gold > 0:
