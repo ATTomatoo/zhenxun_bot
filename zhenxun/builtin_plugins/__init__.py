@@ -11,7 +11,6 @@ from zhenxun.utils.platform import PlatformUtils
 
 from .init.__init_cache import register_cache_types
 
-
 driver = nonebot.get_driver()
 
 
