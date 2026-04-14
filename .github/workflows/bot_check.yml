@@ -67,6 +67,7 @@ jobs:
         id: bot_check_run
         run: |
           mv scripts/bot_check.py bot_check.py
+          cp .env.example .env.dev
           sed -i "s|^.*\?DB_URL.*|DB_URL=\"${{ env.DB_URL }}\"|g" .env.dev
           sed -i "s/^.*\?LOG_LEVEL.*/LOG_LEVEL=${{ env.LOG_LEVEL }}/g" .env.dev
           uv run python3 bot_check.py
