@@ -1157,9 +1157,7 @@ async def _enter_hooks_section():
     """尝试获取全局信号量并更新计数器，超时则抛出 PermissionExemption。"""
     global HOOKS_ACTIVE_COUNT
     try:
-        await asyncio.wait_for(
-            HOOKS_SEMAPHORE.acquire(), timeout=TIMEOUT_SECONDS
-        )
+        await asyncio.wait_for(HOOKS_SEMAPHORE.acquire(), timeout=TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         logger.warning(
             "hooks semaphore acquire timeout, allowing pass",
@@ -1409,10 +1407,7 @@ async def auth(
                 elif plugin.plugin_type == PluginType.SUPERUSER:
                     raise SkipPluginException("超级管理员权限不足...")
             if not admin_checked_pre:
-                if (
-                    event_cache is not None
-                    and event_cache.get("admin_precheck_done")
-                ):
+                if event_cache is not None and event_cache.get("admin_precheck_done"):
                     hook_recorder.set("auth_admin", "precheck")
                     admin_checked_pre = True
                 else:
@@ -1429,8 +1424,8 @@ async def auth(
                         admin_start = time.time()
                         await auth_admin(plugin, session, cached_levels=admin_levels)
                         hook_recorder.set(
-                        "auth_admin", f"{time.time() - admin_start:.3f}s(pre)"
-                    )
+                            "auth_admin", f"{time.time() - admin_start:.3f}s(pre)"
+                        )
                 admin_checked_pre = True
 
         ban_cache_state = None

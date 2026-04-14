@@ -8,8 +8,8 @@
 from __future__ import annotations
 
 import importlib.metadata
-import sys
 from pathlib import Path
+import sys
 
 
 def _print_version() -> None:
@@ -27,7 +27,9 @@ def _run_bot() -> None:
     # 检查是否在有效的项目目录中
     if not (cwd / "zhenxun").is_dir():
         print("错误: 当前目录不是 zhenxun_bot 项目目录。", file=sys.stderr)
-        print("请在项目根目录（包含 zhenxun/ 目录的位置）执行 zx run。", file=sys.stderr)
+        print(
+            "请在项目根目录（包含 zhenxun/ 目录的位置）执行 zx run。", file=sys.stderr
+        )
         sys.exit(1)
 
     # 确保 CWD 在 sys.path 中，以便 nonebot.load_plugins 能找到 zhenxun 包

@@ -544,15 +544,14 @@ class PlaywrightEngine(BaseScreenshotEngine):
         waiters: list[Coroutine[Any, Any, None]] = []
 
         need_ready = not (
-            isinstance(resource_hints, dict)
-            and resource_hints.get("ready") is True
+            isinstance(resource_hints, dict) and resource_hints.get("ready") is True
         )
-        need_images = not isinstance(resource_hints, dict) or resource_hints.get(
-            "images"
-        ) is True
-        need_fonts = not isinstance(resource_hints, dict) or resource_hints.get(
-            "fonts"
-        ) is True
+        need_images = (
+            not isinstance(resource_hints, dict) or resource_hints.get("images") is True
+        )
+        need_fonts = (
+            not isinstance(resource_hints, dict) or resource_hints.get("fonts") is True
+        )
 
         if need_ready:
             waiters.append(self._wait_ready_state(page))
@@ -655,7 +654,9 @@ class PlaywrightEngine(BaseScreenshotEngine):
             if content_width < 10 or content_height < 10:
                 return
 
-            target_width = min(max(width, content_width), self._FULL_PAGE_VIEWPORT_MAX_WIDTH)
+            target_width = min(
+                max(width, content_width), self._FULL_PAGE_VIEWPORT_MAX_WIDTH
+            )
             target_height = max(height, content_height)
             await page.set_viewport_size(
                 {"width": target_width, "height": target_height}
