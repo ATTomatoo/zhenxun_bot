@@ -58,7 +58,7 @@ class ZhenxunRepoConfig:
     # 备份杂项
     BACKUP_FILES: ClassVar[list[str]] = [
         "pyproject.toml",
-        "poetry.lock",
+        "uv.lock",
         "requirements.txt",
         ".env.dev",
         ".env.example",
@@ -89,7 +89,7 @@ class ZhenxunRepoConfig:
     PYPROJECT_FILE_STRING = "pyproject.toml"
     PYPROJECT_FILE = Path() / PYPROJECT_FILE_STRING
 
-    PYPROJECT_LOCK_FILE_STRING = "poetry.lock"
+    PYPROJECT_LOCK_FILE_STRING = "uv.lock"
     PYPROJECT_LOCK_FILE = Path() / PYPROJECT_LOCK_FILE_STRING
 
 
