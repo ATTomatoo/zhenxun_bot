@@ -17,7 +17,7 @@ def _print_version() -> None:
         ver = importlib.metadata.version("zhenxun-bot")
     except importlib.metadata.PackageNotFoundError:
         ver = "unknown"
-    print(f"zhenxun-bot {ver}")
+    sys.stdout.write(f"zhenxun-bot {ver}\n")
 
 
 def _run_bot() -> None:
@@ -26,10 +26,8 @@ def _run_bot() -> None:
 
     # 检查是否在有效的项目目录中
     if not (cwd / "zhenxun").is_dir():
-        print("错误: 当前目录不是 zhenxun_bot 项目目录。", file=sys.stderr)
-        print(
-            "请在项目根目录（包含 zhenxun/ 目录的位置）执行 zx run。", file=sys.stderr
-        )
+        sys.stderr.write("错误: 当前目录不是 zhenxun_bot 项目目录。\n")
+        sys.stderr.write("请在项目根目录（包含 zhenxun/ 目录的位置）执行 zx run。\n")
         sys.exit(1)
 
     # 确保 CWD 在 sys.path 中，以便 nonebot.load_plugins 能找到 zhenxun 包
@@ -99,10 +97,10 @@ def main() -> None:
     elif args[0] == "version":
         _print_version()
     elif args[0] in ("-h", "--help", "help"):
-        print(__doc__)
+        sys.stdout.write((__doc__ or "") + "\n")
     else:
-        print(f"未知命令: {args[0]}", file=sys.stderr)
-        print(__doc__, file=sys.stderr)
+        sys.stderr.write(f"未知命令: {args[0]}\n")
+        sys.stderr.write((__doc__ or "") + "\n")
         sys.exit(1)
 
 

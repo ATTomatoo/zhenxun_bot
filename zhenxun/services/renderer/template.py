@@ -2,7 +2,7 @@ from collections.abc import Callable
 import os
 from pathlib import Path
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from jinja2 import (
     ChoiceLoader,
@@ -258,7 +258,7 @@ class ComponentRenderStrategy(RenderStrategy):
 class TemplateFileRenderStrategy(RenderStrategy):
     """独立模板文件渲染策略。"""
 
-    _env_cache: dict[Path, "RelativePathEnvironment"] = {}
+    _env_cache: ClassVar[dict[Path, "RelativePathEnvironment"]] = {}
     _ENV_CACHE_MAX = 32
 
     @classmethod

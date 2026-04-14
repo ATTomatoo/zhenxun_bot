@@ -46,6 +46,9 @@ dependencies = [
 redis = ["redis>=5"]
 postgresql = ["asyncpg>=0.20.0"]
 
+[project.scripts]
+zx = "zhenxun.cli:main"
+
 [dependency-groups]
 dev = [
     "nonebug>=0.4,<0.5",
@@ -58,8 +61,10 @@ dev = [
     "pre-commit>=4.0.0,<5.0.0",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["zhenxun"]
+
 [tool.uv]
-package = false
 
 [[tool.uv.index]]
 name = "aliyun"
