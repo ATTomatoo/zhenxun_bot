@@ -11,7 +11,7 @@ from zhenxun.services.log import logger
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 from zhenxun.utils.platform import PlatformUtils
 
-from .__init_cache import register_cache_types
+from .init.__init_cache import register_cache_types
 
 nonebot.load_plugins(str(Path(__file__).parent.resolve()))
 
