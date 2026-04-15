@@ -50,7 +50,7 @@ async def run_git_command(
     command: str, cwd: Path | None = None
 ) -> tuple[bool, str, str]:
     """
-    运行git命令
+    运行git命令，实时输出 stderr 进度信息（如 git clone --progress）。
 
     参数:
         command: 命令
@@ -61,7 +61,6 @@ async def run_git_command(
     """
     try:
         full_command = f"git {command}"
-        # 将Path对象转换为字符串
         cwd_str = str(cwd) if cwd else None
         process = await asyncio.create_subprocess_shell(
             full_command,
@@ -69,15 +68,44 @@ async def run_git_command(
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd_str,
         )
-        stdout_bytes, stderr_bytes = await process.communicate()
 
-        stdout = stdout_bytes.decode("utf-8").strip()
-        stderr = stderr_bytes.decode("utf-8").strip()
+        stderr_lines: list[str] = []
+
+        async def _read_stderr():
+            assert process.stderr is not None
+            while True:
+                line = await process.stderr.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    stderr_lines.append(text)
+                    logger.debug(text, LOG_COMMAND)
+
+        stdout_bytes, _ = await asyncio.gather(
+            _collect_stdout(process), _read_stderr()
+        )
+
+        await process.wait()
+        stdout = (stdout_bytes or b"").decode("utf-8").strip()
+        stderr = "\n".join(stderr_lines)
 
         return process.returncode == 0, stdout, stderr
     except Exception as e:
         logger.error(f"运行git命令失败: {command}, 错误: {e}")
         return False, "", str(e)
+
+
+async def _collect_stdout(process: asyncio.subprocess.Process) -> bytes:
+    """收集子进程的全部 stdout 输出。"""
+    assert process.stdout is not None
+    chunks: list[bytes] = []
+    while True:
+        chunk = await process.stdout.read(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def glob_to_regex(pattern: str) -> str:
