@@ -320,7 +320,7 @@ class PlaywrightEngine(BaseScreenshotEngine):
             if current_rss := self._get_total_rss():
                 self._rss_baseline_bytes = current_rss
             self._idle_recycle_task = asyncio.create_task(self._idle_recycle_loop())
-        await self._prewarm_browser_and_pool()
+        # 浏览器在首次 _acquire_context 时按需启动，无需预热
 
     async def close(self) -> None:
         idle_task: asyncio.Task[None] | None = None

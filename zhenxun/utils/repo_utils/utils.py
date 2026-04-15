@@ -73,14 +73,35 @@ async def run_git_command(
 
         async def _read_stderr():
             assert process.stderr is not None
+            buf = b""
             while True:
-                line = await process.stderr.readline()
-                if not line:
+                chunk = await process.stderr.read(256)
+                if not chunk:
+                    if buf:
+                        text = buf.decode("utf-8", errors="replace").strip()
+                        if text:
+                            stderr_lines.append(text)
+                            logger.debug(text, LOG_COMMAND)
                     break
-                text = line.decode("utf-8", errors="replace").rstrip()
-                if text:
-                    stderr_lines.append(text)
-                    logger.debug(text, LOG_COMMAND)
+                buf += chunk
+                while b"\n" in buf or b"\r" in buf:
+                    idx_r = buf.find(b"\r")
+                    idx_n = buf.find(b"\n")
+                    if idx_r == -1:
+                        idx = idx_n
+                    elif idx_n == -1:
+                        idx = idx_r
+                    else:
+                        idx = min(idx_r, idx_n)
+                    line_bytes = buf[:idx]
+                    if buf[idx : idx + 2] == b"\r\n":
+                        buf = buf[idx + 2 :]
+                    else:
+                        buf = buf[idx + 1 :]
+                    text = line_bytes.decode("utf-8", errors="replace").strip()
+                    if text:
+                        stderr_lines.append(text)
+                        logger.debug(text, LOG_COMMAND)
 
         stdout_bytes, _ = await asyncio.gather(_collect_stdout(process), _read_stderr())
 
