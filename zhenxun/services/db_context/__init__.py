@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -43,6 +45,8 @@ __all__ = [
 ]
 
 driver = nonebot.get_driver()
+
+_SCRIPT_HASH_FILE = Path() / "data" / ".db_script_hash"
 
 
 def get_config() -> dict:
@@ -121,7 +125,6 @@ async def init():
             config=get_config(),
         )
         if db_model.script_method:
-            db = Tortoise.get_connection("default")
             logger.debug(
                 "即将运行SCRIPT_METHOD方法, 合计 "
                 f"<u><y>{len(db_model.script_method)}</y></u> 个..."
@@ -134,34 +137,52 @@ async def init():
                         sql_list += sql
                 except Exception as e:
                     logger.debug(f"{module} 执行SCRIPT_METHOD方法出错...", e=e)
-            for sql in sql_list:
-                logger.debug(f"执行SQL: {sql}")
-                try:
-                    await asyncio.wait_for(
-                        db.execute_query_dict(sql), timeout=DB_TIMEOUT_SECONDS
-                    )
-                except OperationalError as e:
-                    err_str = str(e).lower()
-                    if any(
-                        x in err_str
-                        for x in [
-                            "already exists",
-                            "duplicate column",
-                            "已经存在",
-                            "已存在",
-                        ]
-                    ):
-                        pass
-                    elif any(
-                        x in err_str for x in ["does not exist", "check that", "不存在"]
-                    ) and ("drop" in sql.lower() or "rename" in sql.lower()):
-                        pass
-                    else:
-                        logger.warning(f"执行SQL警告: {sql} || {e}")
-                except Exception as e:
-                    logger.debug(f"执行SQL: {sql} 错误...", e=e)
             if sql_list:
-                logger.debug("SCRIPT_METHOD方法执行完毕!")
+                fingerprint = hashlib.md5(
+                    json.dumps(sorted(sql_list), ensure_ascii=False).encode()
+                ).hexdigest()
+                need_run = not (
+                    _SCRIPT_HASH_FILE.exists()
+                    and _SCRIPT_HASH_FILE.read_text(encoding="utf-8").strip()
+                    == fingerprint
+                )
+                if need_run:
+                    db = Tortoise.get_connection("default")
+                    for sql in sql_list:
+                        logger.debug(f"执行SQL: {sql}")
+                        try:
+                            await asyncio.wait_for(
+                                db.execute_query_dict(sql),
+                                timeout=DB_TIMEOUT_SECONDS,
+                            )
+                        except OperationalError as e:
+                            err_str = str(e).lower()
+                            if any(
+                                x in err_str
+                                for x in [
+                                    "already exists",
+                                    "duplicate column",
+                                    "已经存在",
+                                    "已存在",
+                                ]
+                            ):
+                                pass
+                            elif any(
+                                x in err_str
+                                for x in ["does not exist", "check that", "不存在"]
+                            ) and (
+                                "drop" in sql.lower() or "rename" in sql.lower()
+                            ):
+                                pass
+                            else:
+                                logger.warning(f"执行SQL警告: {sql} || {e}")
+                        except Exception as e:
+                            logger.debug(f"执行SQL: {sql} 错误...", e=e)
+                    logger.debug("SCRIPT_METHOD方法执行完毕!")
+                    _SCRIPT_HASH_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    _SCRIPT_HASH_FILE.write_text(fingerprint, encoding="utf-8")
+                else:
+                    logger.debug("迁移脚本无变化，跳过执行")
         logger.debug("开始生成数据库表结构...")
         await Tortoise.generate_schemas()
         logger.debug("数据库表结构生成完毕!")
