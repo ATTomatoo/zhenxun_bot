@@ -1,7 +1,6 @@
+import asyncio
 from collections.abc import Callable
 from typing import ClassVar
-
-import asyncio
 
 import nonebot
 from nonebot.utils import is_coroutine_callable
