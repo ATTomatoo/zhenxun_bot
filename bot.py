@@ -60,6 +60,14 @@ driver.on_shutdown(disconnect)
 nonebot.load_plugins("zhenxun/builtin_plugins")
 nonebot.load_plugins("zhenxun/plugins")
 
+from zhenxun.configs.config import BotConfig
+
+for ext in BotConfig.ext_path:
+    ext = ext.strip()
+    if ext:
+        nonebot.logger.info(f"加载第三方插件目录: {ext}")
+        nonebot.load_plugins(ext)
+
 
 if __name__ == "__main__":
     nonebot.run()

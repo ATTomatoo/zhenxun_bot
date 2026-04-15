@@ -1837,37 +1837,27 @@ class BanMemoryCache:
             await cls.refresh()
 
 
+async def _safe_refresh(cache_cls: type, label: str) -> None:
+    """安全地刷新单个缓存，异常不影响其他缓存。"""
+    try:
+        await cache_cls.refresh()
+    except Exception as exc:
+        logger.error(f"{label} cache init failed", LOG_COMMAND, e=exc)
+
+
 @PriorityLifecycle.on_startup(priority=6)
 async def _init_runtime_cache():
     await RuntimeCacheSync.start()
-    try:
-        await PluginInfoMemoryCache.refresh()
-    except Exception as exc:
-        logger.error("plugin cache init failed", LOG_COMMAND, e=exc)
-    try:
-        await BotMemoryCache.refresh()
-    except Exception as exc:
-        logger.error("bot cache init failed", LOG_COMMAND, e=exc)
-    try:
-        await GroupMemoryCache.refresh()
-    except Exception as exc:
-        logger.error("group cache init failed", LOG_COMMAND, e=exc)
-    try:
-        await LevelUserMemoryCache.refresh()
-    except Exception as exc:
-        logger.error("level cache init failed", LOG_COMMAND, e=exc)
-    try:
-        await TaskInfoMemoryCache.refresh()
-    except Exception as exc:
-        logger.error("task info cache init failed", LOG_COMMAND, e=exc)
-    try:
-        await PluginLimitMemoryCache.refresh()
-    except Exception as exc:
-        logger.error("plugin limit cache init failed", LOG_COMMAND, e=exc)
-    try:
-        await BanMemoryCache.refresh()
-    except Exception as exc:
-        logger.error("ban cache init failed", LOG_COMMAND, e=exc)
+    # 并发刷新所有缓存，互不依赖
+    await asyncio.gather(
+        _safe_refresh(PluginInfoMemoryCache, "plugin"),
+        _safe_refresh(BotMemoryCache, "bot"),
+        _safe_refresh(GroupMemoryCache, "group"),
+        _safe_refresh(LevelUserMemoryCache, "level"),
+        _safe_refresh(TaskInfoMemoryCache, "task info"),
+        _safe_refresh(PluginLimitMemoryCache, "plugin limit"),
+        _safe_refresh(BanMemoryCache, "ban"),
+    )
     PluginInfoMemoryCache.start_refresh_task()
     BotMemoryCache.start_tasks()
     GroupMemoryCache.start_tasks()

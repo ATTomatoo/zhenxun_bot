@@ -42,4 +42,4 @@ COPY --from=metadata-stage /tmp/VERSION /app/VERSION
 
 VOLUME ["/app/zhenxun/data", "/app/zhenxun/resources", "/app/zhenxun/log"]
 
-CMD ["uv", "run", "python", "bot.py"]
+CMD ["uv", "run", "zx", "run"]

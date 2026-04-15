@@ -81,7 +81,7 @@ async def _(bot: Bot):
                 "pid=${pid%/*}\n"
                 "kill -9 $pid\n"
                 "sleep 3\n"
-                "python3 bot.py"
+                "uv run zx run"
             )
         os.system("chmod +x ./restart.sh")  # noqa: ASYNC221
         logger.info("已自动生成 restart.sh(重启) 文件，请检查脚本是否与本地指令符合...")

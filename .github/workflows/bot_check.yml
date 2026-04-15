@@ -7,14 +7,12 @@ on:
       - zhenxun/**
       - tests/**
       - .github/workflows/bot_check.yml
-      - bot.py
   pull_request:
     branches: ["main"]
     paths:
       - zhenxun/**
       - tests/**
       - .github/workflows/bot_check.yml
-      - bot.py
 
 jobs:
   bot-check:
