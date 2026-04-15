@@ -170,9 +170,7 @@ async def init():
                             elif any(
                                 x in err_str
                                 for x in ["does not exist", "check that", "不存在"]
-                            ) and (
-                                "drop" in sql.lower() or "rename" in sql.lower()
-                            ):
+                            ) and ("drop" in sql.lower() or "rename" in sql.lower()):
                                 pass
                             else:
                                 logger.warning(f"执行SQL警告: {sql} || {e}")
