@@ -82,9 +82,7 @@ async def run_git_command(
                     stderr_lines.append(text)
                     logger.debug(text, LOG_COMMAND)
 
-        stdout_bytes, _ = await asyncio.gather(
-            _collect_stdout(process), _read_stderr()
-        )
+        stdout_bytes, _ = await asyncio.gather(_collect_stdout(process), _read_stderr())
 
         await process.wait()
         stdout = (stdout_bytes or b"").decode("utf-8").strip()
