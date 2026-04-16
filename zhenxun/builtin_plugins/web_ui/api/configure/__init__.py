@@ -105,6 +105,7 @@ async def _do_restart():
     if platform.system().lower() == "windows":
         # Windows 下通过 uv 重新启动
         import shutil
+
         uv_path = shutil.which("uv")
         if uv_path:
             os.execl(uv_path, "uv", "run", "zx")
