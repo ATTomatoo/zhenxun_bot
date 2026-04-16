@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from tortoise import fields
 
 from zhenxun.services.db_context import Model
@@ -20,7 +22,7 @@ class Statistics(Model):
     class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "statistics"
         table_description = "插件调用统计数据库"
-        indexes = [
+        indexes: ClassVar = [
             ("user_id", "plugin_name"),
             ("group_id", "plugin_name"),
             ("plugin_name", "create_time"),

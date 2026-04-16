@@ -148,7 +148,52 @@ async def init():
                 )
                 if need_run:
                     db = Tortoise.get_connection("default")
+
+                    async def table_exists(table_name: str) -> bool:
+                        """检查表是否存在"""
+                        try:
+                            # PostgreSQL
+                            result = await db.execute_query_dict(
+                                "SELECT to_regclass($1) IS NOT NULL as exists",
+                                [table_name]
+                            )
+                            if result:
+                                return result[0]["exists"]
+                        except Exception:
+                            pass
+                        try:
+                            # MySQL
+                            result = await db.execute_query_dict(
+                                "SELECT COUNT(*) as count FROM information_schema.tables "
+                                "WHERE table_name = %s",
+                                [table_name]
+                            )
+                            if result:
+                                return result[0]["count"] > 0
+                        except Exception:
+                            pass
+                        try:
+                            # SQLite
+                            result = await db.execute_query_dict(
+                                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                                [table_name]
+                            )
+                            return len(result) > 0
+                        except Exception:
+                            pass
+                        return True  # 如果检查失败，假设表存在，让SQL自己报错
+
                     for sql in sql_list:
+                        # 对于 ALTER TABLE 操作，先检查表是否存在
+                        if sql.strip().upper().startswith("ALTER TABLE"):
+                            import re
+                            match = re.match(r"ALTER\s+TABLE\s+(\w+)", sql, re.IGNORECASE)
+                            if match:
+                                table_name = match.group(1)
+                                if not await table_exists(table_name):
+                                    logger.debug(f"跳过SQL（表不存在）: {sql}")
+                                    continue
+
                         logger.debug(f"执行SQL: {sql}")
                         try:
                             await asyncio.wait_for(
@@ -170,7 +215,9 @@ async def init():
                             elif any(
                                 x in err_str
                                 for x in ["does not exist", "check that", "不存在"]
-                            ) and ("drop" in sql.lower() or "rename" in sql.lower()):
+                            ) and (
+                                "drop" in sql.lower() or "rename" in sql.lower()
+                            ):
                                 pass
                             else:
                                 logger.warning(f"执行SQL警告: {sql} || {e}")

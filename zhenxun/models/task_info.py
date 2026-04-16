@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from tortoise import fields
 
 from zhenxun.services.cache.runtime_cache import TaskInfoMemoryCache
@@ -25,7 +27,7 @@ class TaskInfo(Model):
     class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "task_info"
         table_description = "被动技能基本信息"
-        indexes = [("module",)]
+        indexes: ClassVar = [("module",)]
 
     @classmethod
     async def create(cls, *args, **kwargs):

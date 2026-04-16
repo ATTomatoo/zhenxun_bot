@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from tortoise import fields
 
 from zhenxun.services.db_context import Model
@@ -23,7 +25,7 @@ class GroupInfoUser(Model):
         table = "group_info_users"
         table_description = "群员信息数据表"
         unique_together = ("user_id", "group_id")
-        indexes = [("group_id",), ("user_id",)]
+        indexes: ClassVar = [("group_id",), ("user_id",)]
 
     @classmethod
     async def get_all_uid(cls, group_id: str) -> set[str]:
