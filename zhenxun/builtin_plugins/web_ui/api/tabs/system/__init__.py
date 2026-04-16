@@ -133,8 +133,11 @@ async def _(param: RenameFile) -> Result:
     path = resolved
     if not path.exists():
         return Result.warning_("文件不存在...")
+    new_path, err = validate_path(str(path.parent / param.name))
+    if err or not new_path:
+        return Result.fail(err or "无效的目标路径")
     try:
-        path.rename(path.parent / param.name)
+        path.rename(new_path)
         return Result.ok("重命名成功!")
     except Exception as e:
         return Result.warning_(f"重命名失败: {e!s}")
@@ -167,8 +170,10 @@ async def _(param: RenameFile) -> Result:
     path = resolved
     if not path.exists() or path.is_file():
         return Result.warning_("文件夹不存在...")
+    new_path, err = validate_path(str(path.parent / param.name))
+    if err or not new_path:
+        return Result.fail(err or "无效的目标路径")
     try:
-        new_path = path.parent / param.name
         shutil.move(path.absolute(), new_path.absolute())
         return Result.ok("重命名成功!")
     except Exception as e:
