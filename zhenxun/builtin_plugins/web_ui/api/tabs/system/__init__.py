@@ -125,19 +125,17 @@ async def _(param: RenameFile) -> Result:
     if err := validate_filename(param.name):
         return Result.fail(err)
 
-    path = (parent_path / param.old_name) if param.parent else Path(param.old_name)
-    # 二次确认拼接后路径仍在允许范围内
-    resolved, err = validate_path(str(path))
-    if err or not resolved:
-        return Result.fail(err or "无效的路径")
-    path = resolved
+    root = os.path.realpath(Path())
+    path = Path(os.path.realpath(parent_path / param.old_name))
+    if not str(path).startswith(root + os.sep):
+        return Result.fail("访问路径超出允许范围")
     if not path.exists():
         return Result.warning_("文件不存在...")
-    new_path, err = validate_path(str(path.parent / param.name))
-    if err or not new_path:
-        return Result.fail(err or "无效的目标路径")
     try:
-        path.rename(new_path)
+        dest = Path(os.path.realpath(path.parent / param.name))
+        if not str(dest).startswith(root + os.sep):
+            return Result.fail("目标路径超出允许范围")
+        path.rename(dest)
         return Result.ok("重命名成功!")
     except Exception as e:
         return Result.warning_(f"重命名失败: {e!s}")
@@ -162,19 +160,17 @@ async def _(param: RenameFile) -> Result:
     if err := validate_filename(param.name):
         return Result.fail(err)
 
-    path = (parent_path / param.old_name) if param.parent else Path(param.old_name)
-    # 二次确认拼接后路径仍在允许范围内
-    resolved, err = validate_path(str(path))
-    if err or not resolved:
-        return Result.fail(err or "无效的路径")
-    path = resolved
+    root = os.path.realpath(Path())
+    path = Path(os.path.realpath(parent_path / param.old_name))
+    if not str(path).startswith(root + os.sep):
+        return Result.fail("访问路径超出允许范围")
     if not path.exists() or path.is_file():
         return Result.warning_("文件夹不存在...")
-    new_path, err = validate_path(str(path.parent / param.name))
-    if err or not new_path:
-        return Result.fail(err or "无效的目标路径")
     try:
-        shutil.move(path.absolute(), new_path.absolute())
+        dest = Path(os.path.realpath(path.parent / param.name))
+        if not str(dest).startswith(root + os.sep):
+            return Result.fail("目标路径超出允许范围")
+        shutil.move(path.absolute(), dest)
         return Result.ok("重命名成功!")
     except Exception as e:
         return Result.warning_(f"重命名失败: {e!s}")
