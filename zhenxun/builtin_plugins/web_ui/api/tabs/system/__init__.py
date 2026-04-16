@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from zhenxun.utils._build_image import BuildImage
 
 from ....base_model import Result, SystemFolderSize
-from ....utils import authentication, get_system_disk, validate_path
+from ....utils import authentication, get_system_disk, validate_filename, validate_path
 from .model import AddFile, DeleteFile, DirFile, RenameFile, SaveFile
 
 router = APIRouter(prefix="/system")
@@ -120,7 +120,17 @@ async def _(param: RenameFile) -> Result:
     if not parent_path:
         return Result.fail("无效的路径")
 
+    if err := validate_filename(param.old_name):
+        return Result.fail(err)
+    if err := validate_filename(param.name):
+        return Result.fail(err)
+
     path = (parent_path / param.old_name) if param.parent else Path(param.old_name)
+    # 二次确认拼接后路径仍在允许范围内
+    resolved, err = validate_path(str(path))
+    if err or not resolved:
+        return Result.fail(err or "无效的路径")
+    path = resolved
     if not path.exists():
         return Result.warning_("文件不存在...")
     try:
@@ -144,7 +154,17 @@ async def _(param: RenameFile) -> Result:
     if not parent_path:
         return Result.fail("无效的路径")
 
+    if err := validate_filename(param.old_name):
+        return Result.fail(err)
+    if err := validate_filename(param.name):
+        return Result.fail(err)
+
     path = (parent_path / param.old_name) if param.parent else Path(param.old_name)
+    # 二次确认拼接后路径仍在允许范围内
+    resolved, err = validate_path(str(path))
+    if err or not resolved:
+        return Result.fail(err or "无效的路径")
+    path = resolved
     if not path.exists() or path.is_file():
         return Result.warning_("文件夹不存在...")
     try:
@@ -169,7 +189,15 @@ async def _(param: AddFile) -> Result:
     if not parent_path:
         return Result.fail("无效的路径")
 
+    if err := validate_filename(param.name):
+        return Result.fail(err)
+
     path = (parent_path / param.name) if param.parent else Path(param.name)
+    # 二次确认拼接后路径仍在允许范围内
+    resolved, err = validate_path(str(path))
+    if err or not resolved:
+        return Result.fail(err or "无效的路径")
+    path = resolved
     if path.exists():
         return Result.warning_("文件已存在...")
     try:
@@ -193,7 +221,15 @@ async def _(param: AddFile) -> Result:
     if not parent_path:
         return Result.fail("无效的路径")
 
+    if err := validate_filename(param.name):
+        return Result.fail(err)
+
     path = (parent_path / param.name) if param.parent else Path(param.name)
+    # 二次确认拼接后路径仍在允许范围内
+    resolved, err = validate_path(str(path))
+    if err or not resolved:
+        return Result.fail(err or "无效的路径")
+    path = resolved
     if path.exists():
         return Result.warning_("文件夹已存在...")
     try:
