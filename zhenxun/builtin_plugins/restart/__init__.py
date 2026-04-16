@@ -59,11 +59,16 @@ async def _(bot: Bot, session: Uninfo, flag: str = ArgStr("flag")):
         async with aiofiles.open(RESTART_MARK, "w", encoding="utf8") as f:
             await f.write(f"{bot.self_id} {session.user.id}")
         logger.info("开始重启真寻...", "重启", session=session)
+        
         if str(platform.system()).lower() == "windows":
-            import sys
-
-            python = sys.executable
-            os.execl(python, python, *sys.argv)
+            import shutil
+            uv_path = shutil.which("uv")
+            if uv_path:
+                os.execl(uv_path, "uv", "run", "zx")
+            else:
+                # 降级到直接用 Python 执行（兼容旧的启动方式）
+                python = sys.executable
+                os.execl(python, python, *sys.argv)
         else:
             os.system("./restart.sh")  # noqa: ASYNC221
     else:
