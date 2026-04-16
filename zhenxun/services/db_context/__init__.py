@@ -155,7 +155,7 @@ async def init():
                             # PostgreSQL
                             result = await db.execute_query_dict(
                                 "SELECT to_regclass($1) IS NOT NULL as exists",
-                                [table_name]
+                                [table_name],
                             )
                             if result:
                                 return result[0]["exists"]
@@ -166,7 +166,7 @@ async def init():
                             result = await db.execute_query_dict(
                                 "SELECT COUNT(*) as count FROM information_schema.tables "
                                 "WHERE table_name = %s",
-                                [table_name]
+                                [table_name],
                             )
                             if result:
                                 return result[0]["count"] > 0
@@ -176,7 +176,7 @@ async def init():
                             # SQLite
                             result = await db.execute_query_dict(
                                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                                [table_name]
+                                [table_name],
                             )
                             return len(result) > 0
                         except Exception:
@@ -187,7 +187,10 @@ async def init():
                         # 对于 ALTER TABLE 操作，先检查表是否存在
                         if sql.strip().upper().startswith("ALTER TABLE"):
                             import re
-                            match = re.match(r"ALTER\s+TABLE\s+(\w+)", sql, re.IGNORECASE)
+
+                            match = re.match(
+                                r"ALTER\s+TABLE\s+(\w+)", sql, re.IGNORECASE
+                            )
                             if match:
                                 table_name = match.group(1)
                                 if not await table_exists(table_name):
@@ -215,9 +218,7 @@ async def init():
                             elif any(
                                 x in err_str
                                 for x in ["does not exist", "check that", "不存在"]
-                            ) and (
-                                "drop" in sql.lower() or "rename" in sql.lower()
-                            ):
+                            ) and ("drop" in sql.lower() or "rename" in sql.lower()):
                                 pass
                             else:
                                 logger.warning(f"执行SQL警告: {sql} || {e}")
