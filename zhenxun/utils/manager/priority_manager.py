@@ -66,3 +66,24 @@ async def _():
                 await asyncio.gather(*[_run_hook(f, priority) for f in funcs])
     except HookPriorityException as e:
         logger.error(f"打断优先级 [{priority}] on_startup 方法. {type(e)}: {e}")
+
+
+@driver.on_shutdown
+async def _():
+    priority_data = PriorityLifecycle._data.get(PriorityLifecycleType.SHUTDOWN)
+    if not priority_data:
+        return
+    priority_list = sorted(priority_data.keys())
+    for priority in priority_list:
+        funcs = priority_data[priority]
+        for func in funcs:
+            try:
+                logger.debug(
+                    f"执行优先级 [{priority}] on_shutdown 方法: {func.__module__}"
+                )
+                if is_coroutine_callable(func):
+                    await func()
+                else:
+                    func()
+            except Exception as e:
+                logger.error(f"执行优先级 [{priority}] on_shutdown 方法出错: {e}")

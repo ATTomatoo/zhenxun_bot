@@ -2758,6 +2758,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a" }
+wheels = [
+    { url = "https://mirrors.aliyun.com/pypi/packages/fa/b6/3127540ecdf1464a00e5a01ee60a1b09175f6913f0644ac748494d9c4b21/pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2" },
+]
+
+[[package]]
 name = "pytest-xdist"
 version = "3.8.0"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
@@ -4255,6 +4267,7 @@ dependencies = [
     { name = "psutil" },
     { name = "py-cpuinfo" },
     { name = "pypinyin" },
+    { name = "pytest-timeout" },
     { name = "python-jose", extra = ["cryptography"] },
     { name = "python-multipart" },
     { name = "retrying" },
@@ -4315,6 +4328,7 @@ requires-dist = [
     { name = "psutil", specifier = ">=5.9.8,<6.0.0" },
     { name = "py-cpuinfo", specifier = ">=9.0.0,<10.0.0" },
     { name = "pypinyin", specifier = ">=0.51.0" },
+    { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3.0,<4.0.0" },
     { name = "python-multipart", specifier = ">=0.0.9,<0.1.0" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5" },
