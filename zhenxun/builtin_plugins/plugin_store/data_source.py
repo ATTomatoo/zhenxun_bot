@@ -191,23 +191,52 @@ class StoreManager:
         plugin_info = None
         is_external = False
         db_plugin_list = await cls.get_loaded_plugins("module")
-        plugin_key = await cls._resolve_plugin_key(index_or_module)
-        for p in plugin_list:
-            if p.module == plugin_key:
-                is_external = False
-                plugin_info = p
-                break
-        for p in extra_plugin_list:
-            if p.module == plugin_key:
-                is_external = True
-                plugin_info = p
-                break
-        if not plugin_info:
-            raise PluginStoreException(f"插件不存在: {plugin_key}")
+        try:
+            plugin_key = await cls._resolve_plugin_key(index_or_module)
+        except PluginStoreException:
+            if not is_remove:
+                raise
+            # 移除时插件可能已不在商店列表，回退到数据库查找
+            plugin_key = None
+
+        if plugin_key is not None:
+            for p in plugin_list:
+                if p.module == plugin_key:
+                    is_external = False
+                    plugin_info = p
+                    break
+            for p in extra_plugin_list:
+                if p.module == plugin_key:
+                    is_external = True
+                    plugin_info = p
+                    break
 
         modules = [p[0] for p in db_plugin_list]
 
         if is_remove:
+            # 商店列表中找不到时，从数据库构建最小插件信息
+            if not plugin_info:
+                db_obj = await PluginInfo.get_plugin(
+                    module=index_or_module, plugin_type=PluginType.PARENT
+                ) or await PluginInfo.get_plugin(module=index_or_module)
+                if db_obj is None:
+                    db_obj = await PluginInfo.get_or_none(name=index_or_module)
+                if db_obj is None:
+                    raise PluginStoreException("插件 Module / 名称 不存在...")
+                _mp = db_obj.module_path
+                _path = BASE_PATH.parent / Path(_mp.replace(".", os.sep))
+                plugin_info = StorePluginInfo(
+                    name=db_obj.name,
+                    module=db_obj.module,
+                    module_path=_mp,
+                    description="",
+                    usage="",
+                    author=db_obj.author or "",
+                    version=db_obj.version or "0.0.0",
+                    plugin_type=db_obj.plugin_type or PluginType.NORMAL,
+                    is_dir=_path.is_dir(),
+                )
+                is_external = True
             if plugin_info.module not in modules:
                 raise PluginStoreException(f"插件 {plugin_info.name} 未安装，无法移除")
             if plugin_obj := await PluginInfo.get_plugin(
@@ -217,6 +246,9 @@ class StoreManager:
             elif plugin_obj := await PluginInfo.get_plugin(module=plugin_info.module):
                 plugin_info.module_path = plugin_obj.module_path
             return plugin_info, is_external
+
+        if not plugin_info:
+            raise PluginStoreException(f"插件不存在: {plugin_key}")
 
         if is_update:
             if plugin_info.module not in modules:

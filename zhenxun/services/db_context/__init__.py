@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+import re
 from urllib.parse import urlparse
 
 import aiofiles
@@ -186,8 +187,6 @@ async def init():
                     for sql in sql_list:
                         # 对于 ALTER TABLE 操作，先检查表是否存在
                         if sql.strip().upper().startswith("ALTER TABLE"):
-                            import re
-
                             match = re.match(
                                 r"ALTER\s+TABLE\s+(\w+)", sql, re.IGNORECASE
                             )
@@ -205,6 +204,7 @@ async def init():
                             )
                         except OperationalError as e:
                             err_str = str(e).lower()
+                            sql_lower = sql.lower()
                             if any(
                                 x in err_str
                                 for x in [
@@ -217,8 +217,19 @@ async def init():
                                 pass
                             elif any(
                                 x in err_str
-                                for x in ["does not exist", "check that", "不存在"]
-                            ) and ("drop" in sql.lower() or "rename" in sql.lower()):
+                                for x in [
+                                    "does not exist",
+                                    "check that",
+                                    "不存在",
+                                    "no such column",
+                                ]
+                            ) and ("drop" in sql_lower or "rename" in sql_lower):
+                                pass
+                            elif "syntax error" in err_str and (
+                                "alter column" in sql_lower
+                                or "drop not null" in sql_lower
+                            ):
+                                # SQLite 不支持 PostgreSQL 的 ALTER COLUMN 语法
                                 pass
                             else:
                                 logger.warning(f"执行SQL警告: {sql} || {e}")
