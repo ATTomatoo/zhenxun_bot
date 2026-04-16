@@ -40,9 +40,8 @@ class PriorityLifecycle:
         return wrapper
 
 
-async def _run_hook(func: Callable, priority: int) -> None:
-    """执行单个 hook，异常向上传播。"""
-    logger.debug(f"执行优先级 [{priority}] on_startup 方法: {func.__module__}")
+async def _run_hook(func: Callable, priority: int, hook_type: str = "startup") -> None:
+    logger.debug(f"执行优先级 [{priority}] on_{hook_type} 方法: {func.__module__}")
     if is_coroutine_callable(func):
         await func()
     else:
@@ -62,7 +61,6 @@ async def _():
             if len(funcs) == 1:
                 await _run_hook(funcs[0], priority)
             else:
-                # 同优先级的 hook 并发执行
                 await asyncio.gather(*[_run_hook(f, priority) for f in funcs])
     except HookPriorityException as e:
         logger.error(f"打断优先级 [{priority}] on_startup 方法. {type(e)}: {e}")
@@ -78,12 +76,6 @@ async def _():
         funcs = priority_data[priority]
         for func in funcs:
             try:
-                logger.debug(
-                    f"执行优先级 [{priority}] on_shutdown 方法: {func.__module__}"
-                )
-                if is_coroutine_callable(func):
-                    await func()
-                else:
-                    func()
+                await _run_hook(func, priority, "shutdown")
             except Exception as e:
                 logger.error(f"执行优先级 [{priority}] on_shutdown 方法出错: {e}")
