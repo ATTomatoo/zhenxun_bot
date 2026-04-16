@@ -375,11 +375,28 @@ class BaseRepoManager(ABC):
 
             # 拉取最新代码
             logger.info(f"拉取最新代码: {repo_url}", LOG_COMMAND)
-            pull_cmd = f"pull origin {branch}"
             if force:
-                pull_cmd = f"fetch --all && git reset --hard origin/{branch}"
                 logger.info("使用强制拉取模式", LOG_COMMAND)
-            success, _, stderr = await run_git_command(pull_cmd, cwd=local_path)
+                # 强制模式需要两步：先 fetch，再 reset，不能用 shell && 链式写法
+                success, _, stderr = await run_git_command(
+                    "fetch --all", cwd=local_path
+                )
+                if not success:
+                    return RepoUpdateResult(
+                        repo_type=repo_type or RepoType.GITHUB,
+                        repo_name=repo_name,
+                        owner=owner or "",
+                        old_version=old_version.strip(),
+                        new_version="",
+                        error_message=f"拉取最新代码失败: {stderr}",
+                    )
+                success, _, stderr = await run_git_command(
+                    f"reset --hard origin/{branch}", cwd=local_path
+                )
+            else:
+                success, _, stderr = await run_git_command(
+                    f"pull origin {branch}", cwd=local_path
+                )
             if not success:
                 return RepoUpdateResult(
                     repo_type=repo_type or RepoType.GITHUB,

@@ -162,8 +162,23 @@ async def _():
                 logger.warning("获取GroupInfoUser数据uid失败...", e=e)
             user2uid = {u.user_id: u.uid for u in group_user}
             db = Tortoise.get_connection("default")
-            old_sign_list = await db.execute_query_dict(SIGN_SQL)
-            old_bag_list = await db.execute_query_dict(BAG_SQL)
+            try:
+                old_sign_list = await db.execute_query_dict(SIGN_SQL)
+            except OperationalError as e:
+                if "no such table" in str(e).lower() or "sign_group_users" in str(e):
+                    # 旧签到表不存在，说明是全新环境或已完成过迁移，正常跳过
+                    logger.debug("旧签到表 sign_group_users 不存在，跳过数据迁移")
+                    old_sign_list = []
+                else:
+                    raise
+            try:
+                old_bag_list = await db.execute_query_dict(BAG_SQL)
+            except OperationalError as e:
+                if "no such table" in str(e).lower() or "bag_users" in str(e):
+                    logger.debug("旧背包表 bag_users 不存在，跳过数据迁移")
+                    old_bag_list = []
+                else:
+                    raise
             goods = {
                 g["goods_name"]: g["uuid"]
                 for g in await GoodsInfo.annotate().values("goods_name", "uuid")

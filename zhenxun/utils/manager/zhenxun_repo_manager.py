@@ -454,11 +454,23 @@ class ZhenxunRepoManagerClass:
             result = await self.resources_git_update(source, branch, force)
             if result.success:
                 logger.info("使用git更新资源文件完成!", LOG_COMMAND)
+                return result
             else:
-                logger.error(
-                    f"使用git更新资源文件失败: {result.error_message}", LOG_COMMAND
+                logger.warning(
+                    f"使用git更新资源文件失败: {result.error_message}，"
+                    "尝试回退到zip下载...",
+                    LOG_COMMAND,
                 )
-            return result
+                # git 失败时回退 zip，确保资源文件一定能获取到
+                try:
+                    await self.resources_zip_update()
+                    logger.info("回退zip下载资源文件完成!", LOG_COMMAND)
+                    result.success = True
+                    result.error_message = ""
+                    return result
+                except Exception as e:
+                    logger.error("回退zip下载资源文件也失败", LOG_COMMAND, e=e)
+                    return result
         else:
             await self.resources_zip_update()
             logger.info("使用zip更新资源文件完成!", LOG_COMMAND)
