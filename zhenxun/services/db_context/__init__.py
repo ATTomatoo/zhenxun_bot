@@ -164,7 +164,7 @@ async def init():
                         try:
                             # MySQL
                             result = await db.execute_query_dict(
-                                "SELECT COUNT(*) as count FROM information_schema.tables "
+                                "SELECT COUNT(*) as count FROM information_schema.tables "  # noqa: E501
                                 "WHERE table_name = %s",
                                 [table_name],
                             )
@@ -175,7 +175,7 @@ async def init():
                         try:
                             # SQLite
                             result = await db.execute_query_dict(
-                                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",  # noqa: E501
                                 [table_name],
                             )
                             return len(result) > 0
