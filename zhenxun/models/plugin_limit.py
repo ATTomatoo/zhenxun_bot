@@ -39,6 +39,7 @@ class PluginLimit(Model):
     class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "plugin_limit"
         table_description = "插件限制"
+        indexes = [("module", "status")]
 
     @classmethod
     async def create(cls, *args, **kwargs):

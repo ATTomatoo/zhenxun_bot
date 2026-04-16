@@ -103,8 +103,15 @@ async def _do_restart():
     """执行重启"""
     await asyncio.sleep(1)  # 确保 FastAPI 已返回响应
     if platform.system().lower() == "windows":
-        python = sys.executable
-        os.execl(python, python, *sys.argv)
+        # Windows 下通过 uv 重新启动
+        import shutil
+        uv_path = shutil.which("uv")
+        if uv_path:
+            os.execl(uv_path, "uv", "run", "zx")
+        else:
+            # 降级到直接用 Python 执行（兼容旧的启动方式）
+            python = sys.executable
+            os.execl(python, python, *sys.argv)
     else:
         restart_sh = Path() / "restart.sh"
         if restart_sh.exists():

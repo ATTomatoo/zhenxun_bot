@@ -35,7 +35,6 @@ def _run_bot() -> None:
     if cwd_str not in sys.path:
         sys.path.insert(0, cwd_str)
 
-    # 启动 bot —— 复用 bot.py 的逻辑
     import contextlib
     import platform
 

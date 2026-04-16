@@ -63,6 +63,7 @@ class PluginInfo(Model):
     class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "plugin_info"
         table_description = "插件基本信息"
+        indexes = [("module",), ("module_path",)]
 
     cache_type = CacheType.PLUGINS
     """缓存类型"""

@@ -29,6 +29,11 @@ class ChatHistory(Model):
     class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "chat_history"
         table_description = "聊天记录数据表"
+        indexes = [
+            ("user_id", "create_time"),
+            ("group_id", "create_time"),
+            ("user_id", "group_id"),
+        ]
 
     @classmethod
     async def get_group_msg_rank(

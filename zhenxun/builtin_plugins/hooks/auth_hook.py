@@ -174,6 +174,11 @@ async def _auth_preprocessor(
 ):
     if event.get_type() == "message" and not is_cache_ready():
         raise IgnoredException("cache not ready ignore")
+
+    # 提前判断是否跳过权限检查
+    if _skip_auth_for_plugin(matcher):
+        return
+
     start_time = time.time()
     entity = state.get("_zx_entity")
     if entity is None:
@@ -215,8 +220,6 @@ async def _auth_preprocessor(
         text=text,
         route_modules=route_modules,
     ):
-        return
-    if _skip_auth_for_plugin(matcher):
         return
 
     try:

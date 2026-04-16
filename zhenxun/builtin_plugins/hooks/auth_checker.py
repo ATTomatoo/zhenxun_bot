@@ -52,7 +52,7 @@ from .auth.exception import (
 
 AUTH_HOOKS_CONCURRENCY_LIMIT = 5
 AUTH_DB_CONCURRENCY_LIMIT = 6
-AUTH_EVENT_CACHE_TTL = 2
+AUTH_EVENT_CACHE_TTL = 5  # 增加到5秒，减少缓存抖动
 
 
 # 超时设置（秒）

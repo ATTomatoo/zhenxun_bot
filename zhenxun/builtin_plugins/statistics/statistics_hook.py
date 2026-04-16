@@ -41,16 +41,15 @@ async def _(
         """过滤除poke外的notice"""
         return
     if matcher.plugin:
-        entity = get_entity_ids(session)
         plugin = PluginInfoMemoryCache.get_by_module_path(matcher.plugin.module_name)
         if not plugin:
-            plugin = await PluginInfo.get_plugin(module_path=matcher.plugin.module_name)
-            if plugin:
-                PluginInfoMemoryCache.set_plugin(plugin)
-        if plugin and plugin.ignore_statistics:
+            # cache miss 时不查数据库，直接跳过统计，避免阻塞
             return
-        plugin_type = plugin.plugin_type if plugin else None
+        if plugin.ignore_statistics:
+            return
+        plugin_type = plugin.plugin_type
         if plugin_type == PluginType.NORMAL:
+            entity = get_entity_ids(session)
             logger.debug(f"提交调用记录: {matcher.plugin_name}...", session=session)
             TEMP_LIST.append(
                 Statistics(

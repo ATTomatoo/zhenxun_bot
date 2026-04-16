@@ -4263,6 +4263,7 @@ dependencies = [
     { name = "tenacity" },
     { name = "tortoise-orm" },
     { name = "ujson" },
+    { name = "uvloop", marker = "sys_platform != 'win32'" },
 ]
 
 [package.optional-dependencies]
@@ -4323,6 +4324,7 @@ requires-dist = [
     { name = "tenacity", specifier = ">=9.0.0,<10.0.0" },
     { name = "tortoise-orm", specifier = ">=0.20.0,<0.21.0" },
     { name = "ujson", specifier = ">=5.9.0" },
+    { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.21.0" },
 ]
 provides-extras = ["redis", "postgresql"]
 

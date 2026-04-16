@@ -126,9 +126,6 @@ AccessToken: PUBLIC_ZHENXUN_TEST
 - 提供了 cd，阻塞，每日次数等限制，仅仅通过简单的属性就可以生成一个限制，例如：`PluginCdBlock` 等
 - **更多详细请通过 [传送门](https://zhenxun-org.github.io/zhenxun_bot/) 查看文档！**
 
-
-
-
 ## 🐣 小白整合
 
 如果你系统是 **Windows** 且不想下载 Python  
@@ -151,19 +148,17 @@ AccessToken: PUBLIC_ZHENXUN_TEST
 
 </details>
 
-
-
 ## 🛠️ 简单部署
 
 ```bash
 # 获取代码
-git clone https://oauth2:pt-aztjYgAjnoAXejjfmQXkgxy4_0e2f3e6f-d09b-4182-bee1-45e1db244de2@codeup.aliyun.com/67a361cf556e6cdab537117a/zhenxun-org/zhenxun_bot.git
+git clone https://github.com/HibiKier/zhenxun_bot.git
 
 # 进入目录
 cd zhenxun_bot
 
 # 安装依赖
-pip install uv          # 安装 UV
+pip install uv          # 安装 uv
 uv sync                 # 安装依赖
 
 # 开始运行

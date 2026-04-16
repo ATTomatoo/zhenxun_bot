@@ -25,6 +25,7 @@ class TaskInfo(Model):
     class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "task_info"
         table_description = "被动技能基本信息"
+        indexes = [("module",)]
 
     @classmethod
     async def create(cls, *args, **kwargs):
