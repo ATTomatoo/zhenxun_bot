@@ -153,7 +153,7 @@ class BaseRepoManager(ABC):
             return ""
 
         try:
-            async with aiofiles.open(version_file) as f:
+            async with aiofiles.open(version_file, encoding="utf-8") as f:
                 return (await f.read()).strip()
         except Exception as e:
             logger.error(f"读取版本文件失败: {e}")
@@ -174,10 +174,10 @@ class BaseRepoManager(ABC):
 
         try:
             version_bb = "vNone"
-            async with aiofiles.open(version_file) as rf:
+            async with aiofiles.open(version_file, encoding="utf-8") as rf:
                 if text := await rf.read():
                     version_bb = text.strip().split("-")[0]
-            async with aiofiles.open(version_file, "w") as f:
+            async with aiofiles.open(version_file, "w", encoding="utf-8") as f:
                 await f.write(f"{version_bb}-{version[:6]}")
             return True
         except Exception as e:

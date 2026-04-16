@@ -141,7 +141,8 @@ def get_system_status() -> SystemStatus:
     """获取系统信息等"""
     cpu = psutil.cpu_percent()
     memory = psutil.virtual_memory().percent
-    disk = psutil.disk_usage("/").percent
+    disk_root = Path().resolve().anchor  # 跨平台：取当前工作目录所在盘的根
+    disk = psutil.disk_usage(disk_root).percent
     return SystemStatus(
         cpu=cpu,
         memory=memory,

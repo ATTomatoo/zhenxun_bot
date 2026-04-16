@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import subprocess
 import sys
 import time
 
@@ -110,16 +111,31 @@ async def _do_restart():
         if uv_path:
             os.execl(uv_path, "uv", "run", "zx")
         else:
-            # 降级到直接用 Python 执行（兼容旧的启动方式）
-            python = sys.executable
-            os.execl(python, python, *sys.argv)
+            # 降级：uv 不在 PATH，用 subprocess 启动新进程后退出
+            # 不能用 os.execl(python, python, *sys.argv)，因为 sys.argv[0]
+            # 在 uv run zx 模式下是可执行文件名而非 .py 脚本
+            try:
+                subprocess.Popen(  # noqa: ASYNC220
+                    [sys.executable, "-m", "zhenxun"],
+                    cwd=Path().resolve(),
+                )
+            except Exception:
+                pass
+            os._exit(0)
     else:
         restart_sh = Path() / "restart.sh"
         if restart_sh.exists():
             os.system("./restart.sh")  # noqa: ASYNC221
         else:
-            python = sys.executable
-            os.execl(python, python, *sys.argv)
+            # 降级：无 restart.sh，用 subprocess 启动新进程后退出
+            try:
+                subprocess.Popen(  # noqa: ASYNC220
+                    [sys.executable, "-m", "zhenxun"],
+                    cwd=Path().resolve(),
+                )
+            except Exception:
+                pass
+            os._exit(0)
 
 
 @router.post(

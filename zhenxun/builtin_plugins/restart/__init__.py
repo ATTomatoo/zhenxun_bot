@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import platform
+import subprocess
 import sys
 
 import aiofiles
@@ -68,9 +69,18 @@ async def _(bot: Bot, session: Uninfo, flag: str = ArgStr("flag")):
             if uv_path:
                 os.execl(uv_path, "uv", "run", "zx")
             else:
-                # 降级到直接用 Python 执行（兼容旧的启动方式）
-                python = sys.executable
-                os.execl(python, python, *sys.argv)
+                # 降级：uv 不在 PATH，用 subprocess 启动新进程后退出
+                # 不能用 os.execl(python, python, *sys.argv)，因为 sys.argv[0]
+                # 在 uv run zx 模式下是可执行文件名而非 .py 脚本
+                try:
+                    subprocess.Popen(  # noqa: ASYNC220
+                        [sys.executable, "-m", "zhenxun"],
+                        cwd=Path().resolve(),
+                    )
+                except Exception as exc:
+                    logger.error("降级重启失败", "重启", e=exc)
+                    return
+                os._exit(0)
         else:
             os.system("./restart.sh")  # noqa: ASYNC221
     else:

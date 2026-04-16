@@ -23,8 +23,9 @@ async def check_git() -> bool:
         bool: 是否存在git命令
     """
     try:
-        process = await asyncio.create_subprocess_shell(
-            "git --version",
+        process = await asyncio.create_subprocess_exec(
+            "git",
+            "--version",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -60,13 +61,13 @@ async def run_git_command(
         tuple[bool, str, str]: (是否成功, 标准输出, 标准错误)
     """
     try:
-        full_command = f"git {command}"
-        cwd_str = str(cwd) if cwd else None
-        process = await asyncio.create_subprocess_shell(
-            full_command,
+        args = command.split()
+        process = await asyncio.create_subprocess_exec(
+            "git",
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=cwd_str,
+            cwd=cwd,
         )
 
         stderr_lines: list[str] = []

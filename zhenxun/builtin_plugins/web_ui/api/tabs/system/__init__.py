@@ -173,7 +173,7 @@ async def _(param: AddFile) -> Result:
     if path.exists():
         return Result.warning_("文件已存在...")
     try:
-        path.open("w")
+        path.touch()
         return Result.ok("新建文件成功!")
     except Exception as e:
         return Result.warning_(f"新建文件失败: {e!s}")

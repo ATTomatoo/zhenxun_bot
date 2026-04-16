@@ -38,7 +38,7 @@ class VirtualEnvPackageManager:
         try:
             command = cls.__get_command()
             command.append("install")
-            command.append(" ".join(package))
+            command.extend(package)
             logger.info(f"执行虚拟环境安装包指令: {command}", LOG_COMMAND)
             result = await asyncio.to_thread(
                 subprocess.run,
@@ -52,9 +52,10 @@ class VirtualEnvPackageManager:
                 LOG_COMMAND,
             )
             return result.stdout
-        except CalledProcessError as e:
-            logger.error(f"安装虚拟环境包指令执行失败: {e.stderr}.", LOG_COMMAND)
-            return e.stderr
+        except (CalledProcessError, FileNotFoundError) as e:
+            stderr = e.stderr if isinstance(e, CalledProcessError) else str(e)
+            logger.error(f"安装虚拟环境包指令执行失败: {stderr}.", LOG_COMMAND)
+            return stderr
 
     @classmethod
     async def uninstall(cls, package: list[str] | str):
@@ -68,8 +69,7 @@ class VirtualEnvPackageManager:
         try:
             command = cls.__get_command()
             command.append("uninstall")
-            command.append("-y")
-            command.append(" ".join(package))
+            command.extend(package)
             logger.info(f"执行虚拟环境卸载包指令: {command}", LOG_COMMAND)
             result = await asyncio.to_thread(
                 subprocess.run,
@@ -83,9 +83,10 @@ class VirtualEnvPackageManager:
                 LOG_COMMAND,
             )
             return result.stdout
-        except CalledProcessError as e:
-            logger.error(f"卸载虚拟环境包指令执行失败: {e.stderr}.", LOG_COMMAND)
-            return e.stderr
+        except (CalledProcessError, FileNotFoundError) as e:
+            stderr = e.stderr if isinstance(e, CalledProcessError) else str(e)
+            logger.error(f"卸载虚拟环境包指令执行失败: {stderr}.", LOG_COMMAND)
+            return stderr
 
     @classmethod
     async def update(cls, package: list[str] | str):
@@ -100,7 +101,7 @@ class VirtualEnvPackageManager:
             command = cls.__get_command()
             command.append("install")
             command.append("--upgrade")
-            command.append(" ".join(package))
+            command.extend(package)
             logger.info(f"执行虚拟环境更新包指令: {command}", LOG_COMMAND)
             result = await asyncio.to_thread(
                 subprocess.run,
@@ -111,9 +112,10 @@ class VirtualEnvPackageManager:
             )
             logger.debug(f"更新虚拟环境包指令执行完成: {result.stdout}", LOG_COMMAND)
             return result.stdout
-        except CalledProcessError as e:
-            logger.error(f"更新虚拟环境包指令执行失败: {e.stderr}.", LOG_COMMAND)
-            return e.stderr
+        except (CalledProcessError, FileNotFoundError) as e:
+            stderr = e.stderr if isinstance(e, CalledProcessError) else str(e)
+            logger.error(f"更新虚拟环境包指令执行失败: {stderr}.", LOG_COMMAND)
+            return stderr
 
     @staticmethod
     def _clean_requirements_file(file_path: Path) -> None:
@@ -181,12 +183,13 @@ class VirtualEnvPackageManager:
                 LOG_COMMAND,
             )
             return result.stdout
-        except CalledProcessError as e:
+        except (CalledProcessError, FileNotFoundError) as e:
+            stderr = e.stderr if isinstance(e, CalledProcessError) else str(e)
             logger.error(
-                f"安装虚拟环境依赖文件指令执行失败: {e.stderr}.",
+                f"安装虚拟环境依赖文件指令执行失败: {stderr}.",
                 LOG_COMMAND,
             )
-            return e.stderr
+            return stderr
 
     @classmethod
     async def list(cls) -> str:
@@ -207,6 +210,7 @@ class VirtualEnvPackageManager:
                 LOG_COMMAND,
             )
             return result.stdout
-        except CalledProcessError as e:
-            logger.error(f"列出虚拟环境包指令执行失败: {e.stderr}.", LOG_COMMAND)
+        except (CalledProcessError, FileNotFoundError) as e:
+            stderr = e.stderr if isinstance(e, CalledProcessError) else str(e)
+            logger.error(f"列出虚拟环境包指令执行失败: {stderr}.", LOG_COMMAND)
         return ""

@@ -8,7 +8,7 @@ from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
 from zhenxun.ui.models import LayoutData, StatusBadgeCell, TextCell
 from zhenxun.utils.enum import PluginType
-from zhenxun.utils.exception import GroupInfoNotFound
+from zhenxun.utils.exception import GroupConsoleNotFound
 from zhenxun.utils.platform import PlatformUtils
 
 from .strategy import get_strategy
@@ -82,7 +82,7 @@ async def build_task(group_id: str | None) -> bytes:
     if group_id:
         group = await GroupConsole.get_group_db(group_id=group_id)
         if not group:
-            raise GroupInfoNotFound()
+            raise GroupConsoleNotFound()
     else:
         column_name.remove("群组状态")
     rows = []
