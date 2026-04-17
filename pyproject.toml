@@ -27,6 +27,7 @@ dependencies = [
     "psutil>=5.9.8,<6.0.0",
     "feedparser>=6.0.11,<7.0.0",
     "imagehash>=4.3.1,<5.0.0",
+    "numpy>=1.26,<2.3",
     "cn2an>=0.5.22,<0.6.0",
     "dateparser>=1.2.0,<2.0.0",
     "python-jose[cryptography]>=3.3.0,<4.0.0",
