@@ -1,8 +1,6 @@
 import os
 from pathlib import Path
 import platform
-import subprocess
-import sys
 
 import aiofiles
 import nonebot
@@ -17,6 +15,7 @@ from nonebot_plugin_uninfo import Uninfo
 from zhenxun.configs.config import BotConfig
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.services.log import logger
+from zhenxun.utils._restart_utils import schedule_restart
 from zhenxun.utils.enum import PluginType
 from zhenxun.utils.message import MessageUtils
 from zhenxun.utils.platform import PlatformUtils
@@ -61,28 +60,7 @@ async def _(bot: Bot, session: Uninfo, flag: str = ArgStr("flag")):
         async with aiofiles.open(RESTART_MARK, "w", encoding="utf8") as f:
             await f.write(f"{bot.self_id} {session.user.id}")
         logger.info("开始重启真寻...", "重启", session=session)
-
-        if str(platform.system()).lower() == "windows":
-            import shutil
-
-            uv_path = shutil.which("uv")
-            if uv_path:
-                os.execl(uv_path, "uv", "run", "zx")
-            else:
-                # 降级：uv 不在 PATH，用 subprocess 启动新进程后退出
-                # 不能用 os.execl(python, python, *sys.argv)，因为 sys.argv[0]
-                # 在 uv run zx 模式下是可执行文件名而非 .py 脚本
-                try:
-                    subprocess.Popen(  # noqa: ASYNC220
-                        [sys.executable, "-m", "zhenxun"],
-                        cwd=Path().resolve(),
-                    )
-                except Exception as exc:
-                    logger.error("降级重启失败", "重启", e=exc)
-                    return
-                os._exit(0)
-        else:
-            os.system("./restart.sh")  # noqa: ASYNC221
+        await schedule_restart()
     else:
         await MessageUtils.build_message("已取消操作...").send()
 

@@ -1,10 +1,7 @@
 import asyncio
 import os
 from pathlib import Path
-import platform
 import re
-import subprocess
-import sys
 import time
 
 from fastapi import APIRouter
@@ -100,44 +97,6 @@ async def _(db_url: str) -> Result:
     return Result.ok(info="数据库连接成功!")
 
 
-async def _do_restart():
-    """执行重启"""
-    await asyncio.sleep(1)  # 确保 FastAPI 已返回响应
-    if platform.system().lower() == "windows":
-        # Windows 下通过 uv 重新启动
-        import shutil
-
-        uv_path = shutil.which("uv")
-        if uv_path:
-            os.execl(uv_path, "uv", "run", "zx")
-        else:
-            # 降级：uv 不在 PATH，用 subprocess 启动新进程后退出
-            # 不能用 os.execl(python, python, *sys.argv)，因为 sys.argv[0]
-            # 在 uv run zx 模式下是可执行文件名而非 .py 脚本
-            try:
-                subprocess.Popen(  # noqa: ASYNC220
-                    [sys.executable, "-m", "zhenxun"],
-                    cwd=Path().resolve(),
-                )
-            except Exception:
-                pass
-            os._exit(0)
-    else:
-        restart_sh = Path() / "restart.sh"
-        if restart_sh.exists():
-            os.system("./restart.sh")  # noqa: ASYNC221
-        else:
-            # 降级：无 restart.sh，用 subprocess 启动新进程后退出
-            try:
-                subprocess.Popen(  # noqa: ASYNC220
-                    [sys.executable, "-m", "zhenxun"],
-                    cwd=Path().resolve(),
-                )
-            except Exception:
-                pass
-            os._exit(0)
-
-
 @router.post(
     "/restart",
     response_model=Result,
@@ -158,4 +117,6 @@ async def _() -> Result:
     try:
         return Result.ok(info="执行重启命令成功")
     finally:
-        asyncio.create_task(_do_restart())  # noqa: RUF006
+        from zhenxun.utils._restart_utils import schedule_restart
+
+        asyncio.create_task(schedule_restart())  # noqa: RUF006
