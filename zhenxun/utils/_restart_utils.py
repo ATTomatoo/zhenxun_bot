@@ -12,22 +12,39 @@ _restart_pending: bool = False
 
 
 def _exec_new_process() -> None:
+    import platform
     import shutil
 
+    is_windows = platform.system().lower() == "windows"
     uv_path = shutil.which("uv")
-    if uv_path:
+
+    if uv_path and not is_windows:
         try:
             os.execl(uv_path, "uv", "run", "zx")
         except Exception:
             pass
+
+    if uv_path and is_windows:
+        try:
+            subprocess.Popen(
+                [uv_path, "run", "zx"],
+                cwd=Path().resolve(),
+                creationflags=subprocess.CREATE_NEW_CONSOLE if is_windows else 0,
+            )
+            os._exit(0)
+        except Exception:
+            pass
+
     try:
         subprocess.Popen(
             [sys.executable, "-m", "zhenxun"],
             cwd=Path().resolve(),
+            creationflags=subprocess.CREATE_NEW_CONSOLE if is_windows else 0,
         )
+        os._exit(0)
     except Exception:
-        pass
-    os._exit(0)
+        logger.error("重启失败：无法启动新进程", "重启")
+        os._exit(1)
 
 
 @PriorityLifecycle.on_shutdown(priority=99)

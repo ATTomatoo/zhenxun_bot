@@ -33,24 +33,25 @@ async def _get_browser_instance() -> Any:
 
 
 async def _shutdown_browser_instance() -> None:
+    loop = asyncio.get_event_loop()
+    _orig = loop.get_exception_handler()
+
+    def _filter(lp, ctx):
+        exc = ctx.get("exception")
+        if (
+            ctx.get("message") == "Future exception was never retrieved"
+            and isinstance(exc, Exception)
+            and "Connection closed while reading from the driver" in str(exc)
+        ):
+            return
+        (_orig or lp.default_exception_handler)(lp, ctx)
+
+    loop.set_exception_handler(_filter)
+
     browser_obj = getattr(htmlrender_browser, "_browser", None)
     if browser_obj is not None:
         is_connected_fn = getattr(browser_obj, "is_connected", None)
         if callable(is_connected_fn) and not is_connected_fn():
-            loop = asyncio.get_event_loop()
-            _orig = loop.get_exception_handler()
-
-            def _filter(lp, ctx):
-                exc = ctx.get("exception")
-                if (
-                    ctx.get("message") == "Future exception was never retrieved"
-                    and isinstance(exc, Exception)
-                    and "Connection closed while reading from the driver" in str(exc)
-                ):
-                    return
-                (_orig or lp.default_exception_handler)(lp, ctx)
-
-            loop.set_exception_handler(_filter)
             with contextlib.suppress(Exception):
                 setattr(htmlrender_browser, "_browser", None)
             with contextlib.suppress(Exception):
@@ -69,7 +70,8 @@ async def _shutdown_browser_instance() -> None:
             try:
                 await _await_if_needed(shutdown_func())
             except Exception as e:
-                logger.debug(f"关闭浏览器实例时忽略异常: {e}")
+                if "Connection closed while reading from the driver" not in str(e):
+                    logger.debug(f"关闭浏览器实例时忽略异常: {e}")
             finally:
                 with contextlib.suppress(Exception):
                     setattr(htmlrender_browser, "_browser", None)

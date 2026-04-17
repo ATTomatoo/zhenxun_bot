@@ -294,6 +294,9 @@ async def _ensure_route_index():
                 continue
             module = plugin.name
             _ROUTE_MODULES_WITH_COMMANDS.add(module)
+            module_name = getattr(plugin, "module_name", None) or ""
+            if module_name and module_name != module:
+                _ROUTE_MODULES_WITH_COMMANDS.add(module_name)
             for normalized in command_set:
                 _ROUTE_COMMAND_MAP.setdefault(normalized, set()).add(module)
                 _ROUTE_PREFIX_MAP.setdefault(normalized[0], set()).add(normalized)
@@ -459,6 +462,12 @@ def _matcher_route_cache_key(event: Event) -> str:
 
 def _event_plain_text(event: Event) -> str:
     with contextlib.suppress(Exception):
+        # Use raw_message if available (OneBot v11) to get the original text
+        # before nickname stripping. This ensures command matching works correctly
+        # for commands like "真寻日报" when "真寻" is a bot nickname.
+        raw = getattr(event, "raw_message", None)
+        if isinstance(raw, str) and raw:
+            return raw.strip()
         return (event.get_plaintext() or "").strip()
     return ""
 
