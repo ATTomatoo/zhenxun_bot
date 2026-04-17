@@ -69,3 +69,7 @@ async def _():
                     )
     if update_list:
         await GroupConsole.bulk_update(update_list, ["block_task"], 10)
+        from zhenxun.services.cache.runtime_cache import GroupMemoryCache
+
+        for group in update_list:
+            await GroupMemoryCache.upsert_from_model(group)

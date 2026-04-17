@@ -47,17 +47,14 @@ async def _(bot: Bot):
 
     logger.debug(f"更新Bot: {bot.self_id} 的群认证...", "群认证同步")
 
-    # 实际在用的群列表（当前 bot 连接可见的群）
     current_group_list, _ = await PlatformUtils.get_group_list(bot)
     current_group_ids = {g.group_id for g in current_group_list}
 
-    # 数据库中已有的群记录
     db_group_list: list[str] = await GroupConsole.all().values_list(
         "group_id", flat=True
     )  # pyright: ignore[reportAssignmentType]
     db_group_ids = set(db_group_list)
 
-    # 需要创建的群（当前存在，但数据库中没有）
     create_list = []
     for group in current_group_list:
         if group.group_id not in db_group_ids:
@@ -66,8 +63,33 @@ async def _(bot: Bot):
 
     if create_list:
         await GroupConsole.bulk_create(create_list, 10)
+        task_modules = await GroupConsole._get_task_modules(default_status=False)
+        plugin_modules = await GroupConsole._get_plugin_modules(default_status=False)
+        new_ids = [g.group_id for g in create_list]
+        fresh = await GroupConsole.filter(group_id__in=new_ids).all()
+        if task_modules or plugin_modules:
+            for group in fresh:
+                await GroupConsole._update_modules(group, task_modules, plugin_modules)
+        from zhenxun.services.cache.runtime_cache import GroupMemoryCache
 
-    if delete_ids := list(db_group_ids - current_group_ids):
+        for group in fresh:
+            await GroupMemoryCache.upsert_from_model(group)
+
+    all_bots = nonebot.get_bots()
+    all_visible: set[str] = set(current_group_ids)
+    for other_bot in all_bots.values():
+        if other_bot is bot:
+            continue
+        if PlatformUtils.get_platform(other_bot) != "qq":
+            continue
+        try:
+            other_groups, _ = await PlatformUtils.get_group_list(other_bot)
+            all_visible.update(g.group_id for g in other_groups)
+        except Exception:
+            all_visible.update(db_group_ids)
+            break
+
+    if delete_ids := list(db_group_ids - all_visible):
         deleted_count = await GroupConsole.filter(group_id__in=delete_ids).delete()
     else:
         deleted_count = 0
@@ -78,7 +100,6 @@ async def _(bot: Bot):
     )
 
     if Config.get_config("auto_clean", "CLEAN_CHAT_HISTORY"):
-        # 清理已退出群组的聊天记录
         scheduler.add_job(
             clean_chat_history,
             "cron",

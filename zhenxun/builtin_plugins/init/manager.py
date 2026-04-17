@@ -431,6 +431,9 @@ class Manager:
             # )
         if delete_list:
             await PluginLimit.filter(id__in=delete_list).delete()
+        from zhenxun.services.cache.runtime_cache import PluginLimitMemoryCache
+
+        await PluginLimitMemoryCache.refresh()
         cnt = await PluginLimit.filter(status=True).count()
         logger.info(f"已经加载 {cnt} 个插件限制.")
 
