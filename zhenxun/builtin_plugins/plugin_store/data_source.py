@@ -384,7 +384,7 @@ class StoreManager:
         is_install_req = False
         for requirement_path in requirement_paths:
             requirement_file = target_dir / Path(requirement_path.path).relative_to(
-                 replace_module_path
+                replace_module_path
             )
             if requirement_file.exists():
                 is_install_req = True
