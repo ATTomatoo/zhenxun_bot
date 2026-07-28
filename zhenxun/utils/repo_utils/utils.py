@@ -200,10 +200,13 @@ async def sparse_checkout_clone(
     - 在临时目录中执行所有 git 操作，避免影响 target_dir 中的现有内容
     - 只操作 target_dir/sparse_path 路径，不影响 target_dir 其他内容
     """
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
 
     if not await check_git():
         raise GitUnavailableError()
+
+    normalized_sparse_path = sparse_path.replace("\\", "/").strip("/")
+    is_repo_root = normalized_sparse_path in {"", "."}
 
     # 在临时目录中进行 git 操作
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -219,20 +222,17 @@ async def sparse_checkout_clone(
         if not success:
             raise RuntimeError(f"添加远程失败: {err or out}")
 
-        # 启用稀疏检出（使用 --no-cone 模式以获得更精确的控制）
-        await run_git_command("config core.sparseCheckout true", temp_path)
-        await run_git_command("sparse-checkout init --no-cone", temp_path)
+        if not is_repo_root:
+            # 启用稀疏检出（使用 --no-cone 模式以获得更精确的控制）
+            await run_git_command("config core.sparseCheckout true", temp_path)
+            await run_git_command("sparse-checkout init --no-cone", temp_path)
 
-        # 设置需要检出的路径（每次都覆盖配置）
-        if not sparse_path:
-            raise RuntimeError("sparse-checkout 路径不能为空")
-
-        # 使用 --no-cone 模式，直接指定要检出的具体路径
-        success, out, err = await run_git_command(
-            f"sparse-checkout set {sparse_path}/", temp_path
-        )
-        if not success:
-            raise RuntimeError(f"配置稀疏路径失败: {err or out}")
+            # 使用 --no-cone 模式，直接指定要检出的具体路径
+            success, out, err = await run_git_command(
+                f"sparse-checkout set {normalized_sparse_path}/", temp_path
+            )
+            if not success:
+                raise RuntimeError(f"配置稀疏路径失败: {err or out}")
 
         # 强制拉取并同步到远端
         success, out, err = await run_git_command(
@@ -258,20 +258,31 @@ async def sparse_checkout_clone(
         await run_git_command("clean -xdf", temp_path)
 
         # 将检出的文件移动到目标位置
-        source_path = temp_path / sparse_path
-        if source_path.exists():
-            # 确保目标路径存在
-            target_path = target_dir / sparse_path
+        if is_repo_root:
+            for source_path in temp_path.iterdir():  # noqa: ASYNC240
+                if source_path.name == ".git":
+                    continue
+                target_path = target_dir / source_path.name
+                if target_path.exists():
+                    if target_path.is_dir():
+                        shutil.rmtree(target_path)
+                    else:
+                        target_path.unlink()
+                shutil.move(str(source_path), str(target_path))
+        else:
+            source_path = temp_path / normalized_sparse_path
+            if not source_path.exists():
+                raise RuntimeError(f"稀疏检出路径不存在: {normalized_sparse_path}")
+
+            target_path = target_dir / normalized_sparse_path
             target_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # 如果目标路径已存在，先清理
             if target_path.exists():
                 if target_path.is_dir():
                     shutil.rmtree(target_path)
                 else:
                     target_path.unlink()
 
-            # 移动整个目录结构到目标位置
             shutil.move(str(source_path), str(target_path))
 
 
