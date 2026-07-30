@@ -251,7 +251,9 @@ async def test_forced_aliyun_does_not_fall_back(
         )
 
     assert list_directory_files.await_count == 1
-    assert list_directory_files.await_args.kwargs["repo_type"] == RepoType.ALIYUN
+    await_args = list_directory_files.await_args
+    assert await_args is not None
+    assert await_args.kwargs["repo_type"] == RepoType.ALIYUN
 
 
 async def test_root_plugin_uses_exact_sparse_paths(
